@@ -206,7 +206,7 @@ export function createWorkerHandler() {
               // distinction rather than defaulting it to zero.
               lateralMotion: session.lateralMotion(),
               provenance: scoringProvenance() }
-          : { type: 'error', reason: 'unscorable' });
+          : { type: 'error', reason: 'unscorable', request: 'finish' });
       } else if (m.type === 'reference') {
         // The healthy reference the result screen shows BESIDE each measured
         // value. A message rather than a constant copied into the UI: the
@@ -235,7 +235,12 @@ export function createWorkerHandler() {
         post({ type: 'exportResult', jsonl: session.exportJsonl() });
       }
     } catch (err) {
-      post({ type: 'error', reason: err instanceof Error ? err.message : String(err) });
+      // `request` names the message that failed, so capture.js can route the
+      // error to THAT request's consumer. Without it, an error from `finish`
+      // could settle a pending `export` (the research-recorder data loss
+      // capture.js's createReplyRouter documents).
+      post({ type: 'error', reason: err instanceof Error ? err.message : String(err),
+             request: m && typeof m.type === 'string' ? m.type : 'unknown' });
     }
   };
 }

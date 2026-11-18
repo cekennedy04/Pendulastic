@@ -60,65 +60,194 @@ export function neverStartedHandle(reason) {
     stop() {},
     exportJsonl: () => Promise.reject(new Error(reason)),
     requestReference: () => Promise.resolve(null),
+    sampleCount: () => 0,
+    close() {},
   };
+}
+
+// The user-facing line for a refused/failed motion permission. One string so
+// the clinical and research paths say the same thing.
+export const MOTION_DENIED_MESSAGE =
+  'Motion access was not granted, so nothing was recorded. On iPhone: close '
+  + 'this tab (or the app), reopen it, tap Start and choose Allow.';
+
+// Asks iOS for motion access. MUST be called synchronously inside the tap
+// handler, before the handler's first `await`: iOS only honours
+// DeviceMotionEvent.requestPermission() inside the user gesture, and an await
+// (even an IndexedDB read) ends that window -- the call then rejects or is
+// silently refused. The caller starts the request here and hands the PROMISE
+// to startCapture, which awaits it after whatever async setup it needs.
+//
+// Never rejects: a throw (sync or async) reads as 'denied', so the caller has
+// one failure path, not an unhandled rejection that leaves Stop on screen.
+export function requestMotionPermission() {
+  if (typeof DeviceMotionEvent === 'undefined'
+      || typeof DeviceMotionEvent.requestPermission !== 'function') {
+    return Promise.resolve('granted');
+  }
+  try {
+    return Promise.resolve(DeviceMotionEvent.requestPermission()).catch(() => 'denied');
+  } catch {
+    return Promise.resolve('denied');
+  }
+}
+
+// Routes worker replies to the right consumer. Pure (no Worker, no DOM) so the
+// routing can be tested directly.
+//
+// Every `{type:'error'}` from worker.js names the request that failed
+// (`request: 'finish' | 'export' | 'reference' | 'batch' | 'start'`). Errors
+// are routed BY THAT FIELD, never by "whichever queue happens to have a
+// waiter": the 2026-11 bench audit found the research recorder's
+// stop()->exportJsonl() sequence losing every still recording, because the
+// `finish` request's `{type:'error', reason:'unscorable'}` arrived while an
+// export was pending and was handed to the export promise -- "NOT saved:
+// unscorable" -- while the real exportResult arrived a moment later and was
+// dropped. An error from one request can no longer settle another's promise.
+//
+// A reply with no `request` field can only come from a worker.js older than
+// this file (a stale service-worker cache). It is treated as a trial-level
+// error unless an export/reference is pending -- the pre-2026-11 behaviour --
+// EXCEPT 'unscorable', which only `finish` ever produced and so is always
+// trial-level.
+export function createReplyRouter({ onState, onResult, onError }) {
+  const exportWaiters = [];
+  const referenceWaiters = [];
+  function routeError(m) {
+    const req = m.request;
+    if (req === 'reference') {
+      // Resolved, not rejected: no comparison table is not an operator error.
+      referenceWaiters.shift()?.resolve(null);
+    } else if (req === 'export') {
+      const w = exportWaiters.shift();
+      if (w) w.reject(new Error(m.reason));
+      else onError(m.reason);
+    } else if (req !== undefined || m.reason === 'unscorable') {
+      onError(m.reason);
+    } else if (referenceWaiters.length > 0) {
+      referenceWaiters.shift().resolve(null);
+    } else if (exportWaiters.length > 0) {
+      exportWaiters.shift().reject(new Error(m.reason));
+    } else {
+      onError(m.reason);
+    }
+  }
+  let dead = null;
+  return {
+    route(m) {
+      if (m.type === 'state') onState(m);
+      else if (m.type === 'result') onResult(m.params, m.trajectory, m.ptScore);
+      else if (m.type === 'exportResult') exportWaiters.shift()?.resolve(m.jsonl);
+      else if (m.type === 'reference') referenceWaiters.shift()?.resolve(m.payload);
+      else if (m.type === 'error') routeError(m);
+    },
+    // The worker itself died (worker.onerror / onmessageerror): no reply will
+    // ever come for anything in flight. Reject every pending export, settle
+    // every pending reference as "none", and report ONE trial-level error.
+    // Without this a research Stop sat on "saving…" forever and the recording
+    // was lost with no message. Idempotent: only the first call reports.
+    failAll(reason) {
+      if (dead !== null) return;
+      dead = reason;
+      while (exportWaiters.length) exportWaiters.shift().reject(new Error(reason));
+      while (referenceWaiters.length) referenceWaiters.shift().resolve(null);
+      onError(reason);
+    },
+    // After a crash, new requests fail at once instead of waiting forever.
+    awaitExport(waiter) {
+      if (dead !== null) waiter.reject(new Error(dead));
+      else exportWaiters.push(waiter);
+    },
+    awaitReference(waiter) {
+      if (dead !== null) waiter.resolve(null);
+      else referenceWaiters.push(waiter);
+    },
+  };
+}
+
+export const RAW_EXPORT_TIMEOUT_MS = 10000;
+export const RAW_EXPORT_TIMEOUT_MESSAGE = 'timeout — log as ERROR';
+
+// The research raw recorder's Stop: flush the last batch WITHOUT asking the
+// worker to score, export the raw log, then release the worker. Scoring is
+// deliberately skipped -- a bench recording is often a still or partial log
+// that cannot score, and that must never cost the recording (see
+// createReplyRouter for the bug this replaced).
+//
+// Resolves null when not a single motion sample arrived (an immediate Stop):
+// an empty recording is not saved. Rejects with RAW_EXPORT_TIMEOUT_MESSAGE if
+// the worker has not answered within `timeoutMs`, so the UI can never sit on
+// "saving…" forever.
+export async function stopAndExportRaw(handle, { timeoutMs = RAW_EXPORT_TIMEOUT_MS } = {}) {
+  handle.stop({ finish: false });
+  let timer = null;
+  try {
+    if (typeof handle.sampleCount === 'function' && handle.sampleCount() === 0) return null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(RAW_EXPORT_TIMEOUT_MESSAGE)), timeoutMs);
+    });
+    return await Promise.race([handle.exportJsonl(), timeout]);
+  } finally {
+    clearTimeout(timer);
+    handle.close?.();
+  }
+}
+
+function defaultCreateWorker() {
+  return new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 }
 
 // `onSamples` is optional and used only by the research recorder: it is handed
 // each flushed batch (the same Float64Array that is about to be transferred to
 // the worker) so a live strip chart can read it. The clinical capture path
 // passes no `onSamples`, so its behaviour is byte-for-byte unchanged.
-export async function startCapture({ onState, onResult, onError, onSamples }) {
+//
+// `permission` is the promise from requestMotionPermission(), started by the
+// caller inside its tap handler (see that function). Omitted, startCapture
+// asks itself -- correct only when nothing has been awaited since the tap.
+// `createWorker` and `target` exist for tests (a Node test has no Worker and
+// no window); the browser uses the defaults.
+export async function startCapture({
+  onState, onResult, onError, onSamples, permission,
+  createWorker = defaultCreateWorker,
+  target = typeof window !== 'undefined' ? window : undefined,
+}) {
   if (typeof DeviceMotionEvent === 'undefined') {
     onError('This browser does not expose motion sensors.');
     return neverStartedHandle('capture never started: this browser does not expose motion sensors');
   }
-  if (typeof DeviceMotionEvent.requestPermission === 'function') {
-    const granted = await DeviceMotionEvent.requestPermission();
-    if (granted !== 'granted') {
-      onError('Motion permission denied. Reload the tab and tap Start to retry.');
-      return neverStartedHandle('capture never started: motion permission denied');
-    }
+  let granted;
+  try {
+    granted = await (permission ?? requestMotionPermission());
+  } catch {
+    granted = 'denied';
+  }
+  if (granted !== 'granted') {
+    onError(MOTION_DENIED_MESSAGE);
+    return neverStartedHandle('capture never started: motion permission denied');
   }
 
   let wakeLock = null;
-  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* best effort */ }
+  try { wakeLock = await globalThis.navigator?.wakeLock?.request('screen'); } catch { /* best effort */ }
 
-  // Resolvers for in-flight `exportJsonl()` calls, FIFO -- exactly one
-  // `export`/`exportResult` round trip is ever in flight per call site
-  // (app.js awaits each call before starting another), so a simple queue is
-  // enough to route each reply to its promise without a per-message id.
-  const exportWaiters = [];
-  const referenceWaiters = [];
-
-  const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-  worker.onmessage = (e) => {
-    const m = e.data;
-    if (m.type === 'state') onState(m);
-    else if (m.type === 'result') onResult(m.params, m.trajectory, m.ptScore);
-    else if (m.type === 'exportResult') exportWaiters.shift()?.resolve(m.jsonl);
-    else if (m.type === 'reference') referenceWaiters.shift()?.resolve(m.payload);
-    else if (m.type === 'error') {
-      // A failed `export` request also comes back as `{type:'error'}`
-      // (worker.js's generic catch) -- route it to the waiting promise
-      // instead of the trial fault-latch, which an export failure has
-      // nothing to do with.
-      //
-      // Reference requests are settled FIRST, and resolved rather than
-      // rejected. There are two request queues now, and the worker's error
-      // reply says nothing about which one it belongs to; draining the
-      // export queue first meant a failed reference request rejected an
-      // unrelated in-flight export, surfacing as a spurious "trial was
-      // scored but NOT saved". A reference that cannot be fetched is not an
-      // error the operator can act on -- it just means no comparison table.
-      if (referenceWaiters.length > 0) referenceWaiters.shift().resolve(null);
-      else if (exportWaiters.length > 0) exportWaiters.shift().reject(new Error(m.reason));
-      else onError(m.reason);
-    }
+  const router = createReplyRouter({ onState, onResult, onError });
+  const worker = createWorker();
+  worker.onmessage = (e) => router.route(e.data);
+  // A worker that fails to load (bad module, missing wasm) or throws outside
+  // its own try/catch fires `error` on the Worker object, not a message.
+  // Unhandled, every pending request waited forever.
+  worker.onerror = (e) => {
+    e?.preventDefault?.();
+    router.failAll(`capture worker crashed: ${e?.message || 'unknown error'}`);
+  };
+  worker.onmessageerror = () => {
+    router.failAll('capture worker sent a message that could not be read');
   };
   worker.postMessage({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.5 } });
 
   let buf = new Float64Array(CAP * FLOATS_PER_SAMPLE);
   let n = 0;
+  let total = 0; // samples accepted over the whole capture
 
   const onMotion = (event) => {
     const a = event.accelerationIncludingGravity;
@@ -127,6 +256,7 @@ export async function startCapture({ onState, onResult, onError, onSamples }) {
     if (n >= CAP) return;                    // dropped rather than reallocating mid-handler
     encodeSample(buf, n * FLOATS_PER_SAMPLE, event);
     n++;
+    total++;
   };
 
   const flush = () => {
@@ -142,16 +272,36 @@ export async function startCapture({ onState, onResult, onError, onSamples }) {
     worker.postMessage({ type: 'batch', buf: out.buffer }, [out.buffer]);
   };
 
-  window.addEventListener('devicemotion', onMotion);
+  target.addEventListener('devicemotion', onMotion);
   const timer = setInterval(flush, BATCH_MS);
+  let stopped = false;
+
+  // Ends capture: stops listening and flushes the final batch. `finish` (the
+  // default) also asks the worker to SCORE, which the clinical path needs.
+  // The research raw recorder passes `{ finish: false }`: it never scores, and
+  // a `finish` on a still/unscorable log only produces an 'unscorable' error
+  // it has no use for. Idempotent: a second call does nothing.
+  function stop({ finish = true } = {}) {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    target.removeEventListener('devicemotion', onMotion);
+    flush();
+    if (finish) worker.postMessage({ type: 'finish' });
+    wakeLock?.release?.().catch(() => {});
+  }
 
   return {
-    stop() {
-      clearInterval(timer);
-      window.removeEventListener('devicemotion', onMotion);
-      flush();
-      worker.postMessage({ type: 'finish' });
-      wakeLock?.release?.().catch(() => {});
+    stop,
+    // Motion samples accepted so far (0 = nothing was recorded).
+    sampleCount: () => total,
+    // Releases the worker (and its wasm memory). Only for callers that are
+    // completely done with the handle -- after close(), exportJsonl() cannot
+    // answer. The clinical path keeps its handle for a later export and does
+    // not call this.
+    close() {
+      stop({ finish: false });
+      worker.terminate?.();
     },
     // Raw-log export (KTD4): resolves with the newline-delimited JSON of the
     // whole trial. Callable any time the worker's session is still alive --
@@ -161,7 +311,7 @@ export async function startCapture({ onState, onResult, onError, onSamples }) {
     // scored (or failed to).
     exportJsonl() {
       return new Promise((resolve, reject) => {
-        exportWaiters.push({ resolve, reject });
+        router.awaitExport({ resolve, reject });
         worker.postMessage({ type: 'export' });
       });
     },
@@ -179,7 +329,7 @@ export async function startCapture({ onState, onResult, onError, onSamples }) {
         // which the UI already renders as a hidden table.
         let settled = false;
         const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-        referenceWaiters.push({ resolve: done });
+        router.awaitReference({ resolve: done });
         worker.postMessage({ type: 'reference' });
         setTimeout(() => done(null), 3000);
       });

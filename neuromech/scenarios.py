@@ -21,7 +21,8 @@ Groups:
                       validated core and that module is retired
   R  rig / mechanism   the four mechanisms B9 ported: bearing friction, a named person's
                       anthropometry, a tonic arrest-and-hold, and the velocity vs length vs
-                      force reflex channels
+                      force reflex channels (the force channel is S-lam1: R-reflex-force had
+                      its exact Params and was dropped, owner decision 2026-11-17)
   S  severity axis     the published model's tone+reflex path, incl. the inverting branch
   B  behaviours        flexor/extensor dominance, catch, clonus, rigidity, contracture,
                        hypotonia, guarding, spasm, habituation
@@ -96,16 +97,58 @@ BAND_MIDDLE: dict[str, str] = {
 #: build's edge check (build.edge_check, within build.EDGE_MARGIN_PT7) does not flag these. Each says why.
 #: An entry whose scenario is no longer built fails the build; one no longer near an edge is reported.
 NEAR_EDGE_ALLOWED: dict[str, str] = {
-    "S-lam1": "the published severity axis at its nominal lambda 1 (De Groote 2018); where it grades is the finding",
+    "S-lam1": "the published severity axis at its nominal lambda 1 (De Groote 2018); where it grades is the finding. "
+              "Also the R group's force-feedback channel at the shared tone 2.0 N.m (R-reflex-force was its duplicate)",
     "S-lam6": "the published axis past the A0 gate: refused for insufficient excursion; the PT7 is never shown",
-    "C-wmax-low": "one parameter pushed out of range by a fixed time scale (x0.5); the band is wherever that lands",
-    "C-f-low": "the same 0.46 Hz swing as C-wmax-low, probing f; the time scale is the probe, not a knob",
+    "C-f-low": "f and omega_max pushed low by a fixed time scale (x0.5, 0.46 Hz); the time scale is the probe, not a knob",
     "C-f-high": "f pushed past the 2.0 Hz plausibility flag (x2.5 = 2.3 Hz); the time scale is set by that flag",
-    "R-friction": "the rig's own bearing friction (rig_params), a measured property, not a preset",
-    "R-reflex-force": "the force-feedback channel at the tone the velocity and length channels share; moving it breaks the comparison",
+    "R-friction": "a FINDING, not a probe to refit (owner decision 2026-11-17): the rig's own bearing friction "
+                  "(rig_params, a measured property) with no simulated spasticity scores just under the MAS 1 edge, "
+                  "so a real rig's friction could push healthy-ish presets toward MAS 1 (README, Findings)",
     "R-reflex-vel": "the velocity-feedback channel at the shared tone 2.0 N.m; moving it breaks the comparison",
     "R-reflex-len": "the length-feedback channel at the shared tone 2.0 N.m; moving it breaks the comparison",
     "H-HM3": "HESS Table III elbow values played unscaled (Park et al. 2012); the probe is what the port does",
+}
+
+#: Fields of a Scenario that only label it; every other field (Params, release conditions, the kinematic
+#: transforms) decides what the rig plays and what the scorer sees.
+LABEL_FIELDS = ("sid", "group", "title", "probes", "source", "intent")
+
+
+def definition_key(sc: Scenario):
+    """What a scenario renders to, as a hashable value: its Params and every non-label field. Two scenarios
+    with the same key are one swing under two names (byte-identical setpoints and traces). The key is the
+    whole definition, not Params alone: the C and D probes share the default Params on purpose and differ
+    only by their transform or release (time_scale, theta0_deg, ...)."""
+    from dataclasses import fields as _fields
+    return (tuple(sorted(sc.params.to_dict().items())),) + tuple(
+        (f.name, getattr(sc, f.name)) for f in _fields(sc) if f.name not in LABEL_FIELDS and f.name != "params")
+
+
+#: Sets of scenarios that render the same swing ON PURPOSE (build.duplicate_check). Any other duplicate fails
+#: the build (owner decision 2026-11-17, after C-wmax-low duplicated C-f-low and R-reflex-force duplicated
+#: S-lam1; both dropped). A set is matched exactly, so a new member of a known set fails until it is added here.
+DUPLICATE_ALLOWED: dict[frozenset, str] = {
+    frozenset({"A-P1", "B-extensor", "B-habit1"}):
+        "ladder-dependent: B-extensor and the habituation series use the band-2 rung, which falls back to the mid "
+        "rung (A-P1) while band 2 is unreachable; B-habit1 is drop 1 of its series (gain x1)",
+    frozenset({"B-leadpipe", "M-fall_no_ringdown"}):
+        "the M profile renders profiles.fall_no_ringdown, defined independently of B (severity_grading_test); "
+        "M-fall_no_ringdown is in the dry run's default session",
+    frozenset({"B-contracture", "M-contracture_stop"}):
+        "the M profile renders profiles.contracture_stop, defined independently of B (severity_grading_test)",
+}
+
+#: Scenarios whose PT7 band disagrees with their severity intent (Scenario.intent, from
+#: profiles.SEVERITY_INTENT) and are accepted as they are. build.intent_mismatch reports every mismatch and
+#: marks these; it never changes the build's exit status.
+INTENT_MISMATCH_ACCEPTED: dict[str, str] = {
+    **{f"M-tone_L{k}": "the tone ladder keeps its literal lambdas as a fixed library for testing recalibrations "
+                       "(profiles._LADDER_LAMBDA); not refitted, owner decision 2026-11-17" for k in (1, 2, 3, 4)},
+    "M-catch_and_hold_140": "arrests with no return swing, so the scorer refuses it (no oscillation): the "
+                            "refusal path is what it probes",
+    "M-catch_and_hold_127": "arrests with no return swing, so the scorer refuses it (no oscillation): the "
+                            "refusal path is what it probes",
 }
 
 
@@ -128,7 +171,9 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
     # ── S: severity axis incl. the inverting branch ───────────────────────
     for lam in (1.0, 1.5, 2.0, 3.0, 6.0):
         sc.append(Scenario(f"S-lam{lam:g}", "S", f"Published severity axis, lambda {lam:g}", severity(lam),
-                           probes="severe leg that the composite may grade milder or refuse (U-shape)"))
+                           probes="severe leg that the composite may grade milder or refuse (U-shape)"
+                           + ("; also the R group's force-feedback channel: first- vs second-swing ordering, "
+                              "De Groote's own discriminator" if lam == 1.0 else "")))
     # ── B: behaviours ─────────────────────────────────────────────────────
     sc += [
         Scenario("B-extensor", "B", "Extensor-dominant (quadriceps reflex only)", m2, probes="area_ratio direction, phi_max"),
@@ -166,10 +211,12 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
         Scenario("C-phi-high", "C", "phi_max > 1: energy injected on the return", replace(base, spasm_nm=12.0, spasm_t=0.7, spasm_w=0.25),
                  probes="phi_max_ratio > 1 is physically implausible for a passive leg"),
         Scenario("C-wmax-high", "C", "omega_max high: same swing, 2x faster", base, time_scale=2.0, probes="omega_max_n, f"),
-        Scenario("C-wmax-low", "C", "omega_max low: same swing, 2x slower", base, time_scale=0.5, probes="omega_max_n, f"),
         Scenario("C-wmin-high", "C", "omega_min high: velocity never stops at reversals", Params(guard_nm=1.6, guard_seed=7, B=0.1),
                  probes="omega_min_n"),
-        Scenario("C-f-low", "C", "f low: 0.46 Hz", base, time_scale=0.5, probes="f"),
+        # One swing, 2x slower, probes both f and omega_max low; C-wmax-low was the same swing under a
+        # second name and was dropped (owner decision 2026-11-17).
+        Scenario("C-f-low", "C", "f low: 0.46 Hz (omega_max low: same swing, 2x slower)", base, time_scale=0.5,
+                 probes="f, omega_max_n"),
         Scenario("C-f-high", "C", "f above the 2.0 Hz plausibility flag (2.3 Hz)", base, time_scale=2.5, probes="f_out_of_range flag"),
         Scenario("C-area-high", "C", "area_ratio high: rest creeps after settling", base, tail_creep_dps=3.0, tail_creep_t=6.0,
                  probes="neutral_deg -> area_ratio; the phone-drift failure, with encoder truth"),
@@ -221,12 +268,12 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
         Scenario("R-anthro-heavy", "R", "Same height, 95 kg: identical period, heavier limb",
                  Params(**dict(zip(("lc_m", "m_kg", "j_kgm2"), limb_from_anthropometry(95.0, 1.75)))),
                  probes="f must match R-anthro-72kg -- mass cancels in m*g*lc/J; only torque differs"),
-        Scenario("R-reflex-force", "R", "Extensor reflex: FORCE feedback only (the published channel)",
-                 Params(tone=2.0, k_f=0.75, k_df=0.025),
-                 probes="first-swing vs second-swing ordering; De Groote's own discriminator"),
+        # The FORCE-feedback channel (the published one) at this tone is severity(1) = S-lam1, which probes
+        # the first-swing vs second-swing ordering; R-reflex-force was that Params under a second name and
+        # was dropped (owner decision 2026-11-17). The channels below compare against S-lam1.
         Scenario("R-reflex-vel", "R", "Extensor reflex: VELOCITY feedback only, same tone",
                  Params(tone=2.0, k_v=3.0, k_v_thr=0.5),
-                 probes="the classical alternative; must not invert the swing ordering where force does"),
+                 probes="the classical alternative; must not invert the swing ordering where force (S-lam1) does"),
         Scenario("R-reflex-len", "R", "Extensor reflex: LENGTH feedback only, same tone",
                  Params(tone=2.0, k_l=3.0, k_l_thr_deg=5.0),
                  probes="tonic stretch drive: resistance grows with excursion, not with speed"),

@@ -11,7 +11,7 @@ Run everything from the repo root with the project venv (`.venv/Scripts/python.e
 ## 1. Build the scenario library (once, or after a model change)
 
 ```bash
-python -m neuromech.build                # 66 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
+python -m neuromech.build                # 64 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
 ```
 
 | Group | What | Source |
@@ -22,7 +22,7 @@ python -m neuromech.build                # 66 scenarios -> neuromech/out/ (manif
 | C | each of the 7 parameters and the A0 gate pushed out of range | De Groote core + kinematic transforms |
 | D | release artefacts: push, wobble, short record, low lift | De Groote core |
 | M | severity AND kind of severity: tone ladder, catch-and-hold, no-ringdown fall, end-stop (the catch-release copy of `B-claspknife` was dropped, O5) | De Groote core, via `profiles.py` |
-| R | the four mechanisms B9 ported, one at a time: bearing friction, anthropometry, tonic arrest, reflex channel | De Groote core |
+| R | the four mechanisms B9 ported, one at a time: bearing friction, anthropometry, tonic arrest, reflex channel (the force channel is `S-lam1`) | De Groote core |
 | H | HESS's four haptic models (Park et al. 2012, Table III), elbow values unscaled: the three-phase catch on a pendulum | De Groote core + `hess_*` module |
 | K | HESS HM#1–2 on the knee: H alone refitted so each holds its intended MAS 1 / 1+ (HM#3's MAS 2 and HM#4's MAS 3 exist only in a sliver below the arrest jump) | De Groote core + `hess_*` module |
 
@@ -37,8 +37,39 @@ built); the library is still written. Presets meant to sit in a band are refitte
 `build.fit_param` (the ladder's bisection, on one other parameter) and listed in `scenarios.BAND_MIDDLE`;
 scenarios whose purpose is the edge or an out-of-range parameter (S axis, C, R, HESS's unscaled values) are
 allowlisted, each with its reason. `--allow-near-edge` builds anyway. On `pt5trough-ref-2026-11-16`
-(2026-11-17): nothing flagged, 10 allowlisted (`S-lam1`, `S-lam6`, `C-wmax-low`, `C-f-low`, `C-f-high`,
-`R-friction`, `R-reflex-force`, `R-reflex-vel`, `R-reflex-len`, `H-HM3`).
+(2026-11-17, 64 scenarios): nothing flagged, 8 allowlisted (`S-lam1`, `S-lam6`, `C-f-low`, `C-f-high`,
+`R-friction`, `R-reflex-vel`, `R-reflex-len`, `H-HM3`).
+
+**Duplicate check (owner decision, 2026-11-17).** The build also **exits 1** if two scenarios render the same
+swing under different names: identical Params, release and kinematic transforms (`scenarios.definition_key`;
+Params alone would not do, since the C and D probes share the default Params on purpose and differ only by
+their transform or release). `C-wmax-low` (= `C-f-low`) and `R-reflex-force` (= `S-lam1`, the published
+force-feedback channel `severity(1)`) were dropped this way, so the library went from 66 to 64. The probe-group
+originals were kept: `C-f-low` now probes both f and omega_max (one 2x-slower swing), and `S-lam1` is the R
+group's force channel that `R-reflex-vel` and `R-reflex-len` compare against. Sets that are one swing on
+purpose are listed in `scenarios.DUPLICATE_ALLOWED` with the reason, matched as exact sets: `A-P1` =
+`B-extensor` = `B-habit1` (B's band-2 rung falls back to the mid rung while band 2 is unreachable),
+`B-leadpipe` = `M-fall_no_ringdown` and `B-contracture` = `M-contracture_stop` (the M profiles are defined
+independently in `profiles.py`).
+
+**Intent report (owner decision, 2026-11-17; report only).** For every scenario with a severity intent
+(`Scenario.intent`, from `profiles.SEVERITY_INTENT`, whole MAS grades) the build prints the intended band and
+the band its PT7 lands in, and lists each mismatch. It never changes the exit status. The known mismatches are
+**accepted** (`scenarios.INTENT_MISMATCH_ACCEPTED`), and anything else prints as `MISMATCH`. On
+`pt5trough-ref-2026-11-16`: `M-tone_L1` band 0 (intent 1, PT7 0.076), `M-tone_L2` band 1 (intent 2, 0.190),
+`M-tone_L3` and `M-tone_L4` band 1+ (intents 3 and 4, 0.344 and 0.404). The tone ladder is not refitted: its
+lambdas are literal on purpose (`profiles._LADDER_LAMBDA`, a fixed library for testing recalibrations), and
+intents 2 to 4 are above the axis's peak (0.4035). `M-catch_and_hold_140` and `_127` (intents 3 and 2) are
+refused (no oscillation), which is the refusal path they probe.
+
+### Findings
+
+- **Rig bearing friction alone sits just under MAS 1 (2026-11-17, scorer `pt5trough-ref-2026-11-16`, core
+  0.4.0).** `R-friction` (the rig's own dry bearing friction, `rig_params()`, no simulated spasticity) scores
+  PT7 0.1144, 0.0056 below the 0/1 edge (0.12); `R-friction-heavy` (0.4 N.m) scores 0.1748, band 1.
+  Implication: on a real rig with friction, healthy-ish presets could be pushed toward MAS 1 by the hardware
+  alone. To be checked on the real rig. `R-friction` stays in `NEAR_EDGE_ALLOWED`, recorded there as a finding,
+  not a preset to refit.
 
 ## 2. Plan a session
 
@@ -65,9 +96,120 @@ python -m neuromech.usb_kit --name <S> [--dest E:\]     # scripts + player files
 ```
 
 On the rig PC: `PICK_VARIABLE.bat` once, then drag a file onto `DRYRUN.bat` (moves nothing) or
-`PLAY.bat`. It refuses files over 45 deg, with a header, or not starting at 0; q/Esc ramps back to 0;
-each run leaves `sent/<run>_<time>.csv`, what it wrote and when. Logs and the run sheet come back on
-the stick. The kit's `README.txt` is the bench procedure. `key.csv` never goes on the stick.
+`PLAY.bat`. q/Esc ramps back to 0; each run leaves `sent/<run>_<time>.csv`, what it wrote and when.
+Logs and the run sheet come back on the stick. The kit's `README.txt` is the bench procedure.
+`key.csv` never goes on the stick.
+
+**Playback safety guard** (owner decisions 2026-11-17). Both players — `play_setpoints.ps1` and the
+Pendulum Designer — take their rules from one file, `labview/player/RigGuard.cs` (PLAY loads it with
+`Add-Type`, the Designer compiles it in; `neuromech/rig_guard.py` is the Python twin, and
+`tests/test_rig_guard.py` requires all three to give the same verdict on the same fixture files):
+
+- **Hard limit ±40° rig angle**, compiled in. `-MaxDeg` / the Designer's *Max |angle|* can only lower it
+  (`-MaxDeg 45` is refused; the Designer's control stops at 40).
+- **Refused at load, whole, never clipped** (the message names the time and value): a header, a
+  non-number, NaN/Inf, a row without exactly two columns (`0,0,99` or a decimal-comma file), time not
+  starting at 0 or not increasing, a first angle other than 0, any |angle| over the limit, any change
+  over **6° within 10 ms (600 °/s)**, or a **predicted delivered peak** over the limit. The players
+  read the file at whole milliseconds of their clock, nominally every 10 ms, but a late tick puts a
+  write on any millisecond; so the speed rule compares every pair of milliseconds up to 10 ms apart,
+  not just the 0/10/20 ms grid (which a 5° 50 Hz wiggle or a 1 ms 30° spike slips through), and the
+  prediction runs on all ten 1 ms phases of the write grid. The library's 5° sync pulses are 5° in
+  one write (500 °/s) and pass. A UTF-8 BOM is accepted by all three (both players and `rig_guard`).
+- **Predicted delivered peak**: the 10 ms staircase (plus the 2 s end hold) through the identified
+  closed loop (section 4 of the LabVIEW spec: 2nd order, 6.35 Hz, ζ 0.23; gain 1.26 at 3 Hz, ~2.0 at
+  5 Hz) and five detuned copies (ωn ×0.9 and ×1.1, ζ 0.18); the largest |angle| of the six, worst
+  phase. It is a model of the rig as identified on 2026-10-26 with its P/I/D at the identified values,
+  not a guarantee: re-identify after any gain change. Saturation and integrator windup (a low
+  Controller Output Range) are not modelled.
+- **Designer, live designs only**: a design over the limit is offered the largest rig amplitude scale
+  (0.01 steps) that passes with the predicted peak ≤ limit − 1°, rescored at that scale; it plays only
+  on an explicit Yes, and the score shown and logged is the scaled swing's. The default scale is
+  `Knobs.DefaultScale` = **0.70** (owner, 2026-11-17), so the default MAS designs (55° release → 38.5°)
+  play without the prompt. An opened `.csv` over the limit is refused, not offered a scale (scaling a
+  file would scale its sync pulses and leave its session's intended scores behind).
+- **Per-write backstop** in both send paths: NaN/Inf never sent, clamp to ±limit, at most 6° from the
+  last value the rig **took** (a write that returned true) and from the last value tried, so a run of
+  failed writes followed by a success can never jump the rig. If it ever engages while playing, the run stops and ramps to 0 at 10 °/s (PLAY exits 5,
+  the Designer shows "STOPPED by the guard"); a guard row is logged. On a fast file a Windows tick
+  late by tens of ms can trip it (the library's swings move at most 7° per write, typically ≤ 3°).
+- **Ramp-in**: if the current setpoint cannot be read (or reads NaN or beyond the limit) the player
+  refuses to start: no step to 0 from wherever the arm is. PLAY reads it again right after Enter and
+  refuses if that fails or it moved more than 0.5° while the prompt waited; it ramps from the fresh
+  value. The Designer reads it after its confirm box, when the play starts.
+- **Returns to 0**: STOP / q / Esc / Ctrl+C, a guard or watchdog stop, and the end of a run all ramp the
+  setpoint to 0 at the return speed (10 °/s; PLAY's `-ReturnDps` takes 1–60). Every ramp is
+  write-indexed: each write is one step (return speed × 10 ms) from the last value the rig took, so a
+  failed or late write is retried, never jumped over; it runs until the rig has taken the target, for at
+  most twice its nominal time + 5 s. After the warm-up write (the value already held) the player waits one
+  tick before the first play write. STOP or
+  q during the ramp-in cancels the play that would follow. PLAY catches Ctrl+C (as a keystroke and as
+  a console signal; the signal path is tested with Ctrl+C-as-input off, the case its handler is for) from
+  its Enter prompt to the end and treats it like q; **Ctrl+Break and closing the
+  window are not caught**. The write period is fixed at 10 ms (no `-PeriodMs`), and there is no
+  `-NoReturn`: PLAY refuses any option it does not know.
+- **Errors return to 0 first**: **any** failed write during play or the end hold ends the play at once
+  (the rig did not get that value); so does any exception after the first write. Each starts a guarded
+  ramp to 0 (through the backstop, from the last value the rig took, tolerating failed writes, bounded
+  in time) before the lock is released; the outcome is logged (failed writes carry `write failed: ...`
+  in the note, `error` rows, sent log `*_error.csv`, PLAY exit 4). Tested with writes 60–79 failing
+  mid-rise of a 35° swing: the largest step between values the rig took stays ≤ 6°. If the writes
+  cannot get through, both players say **RIG HOLDING LAST SETPOINT -- USE THE E-STOP** (the Designer in
+  a message box) and leave `sent/HOLDING.flag`. The next start of either player shows it and plays only
+  after an explicit acknowledgement (PLAY: type `YES`; the Designer: a Yes/No box, default No), which
+  deletes it; a dry run ignores it. (The writer lock itself needs no clean-up: Windows releases it when
+  the process exits.)
+- **Logged**: every refusal leaves `sent/<file>_<time>_refused.csv`; backstop events are `guard` rows
+  in the sent log (`t_wall_s,t_file_s,phase,setpoint_deg,note`). `session check-log ... --sent <sent log>`
+  fails a run with any refusal, guard or error row. `session plan` writes `guard.csv` (each run's
+  verdict and predicted peak) and warns how many runs the players will refuse;
+  `python -m neuromech.rig_guard <files|dir> [--index out.csv]` / `--library` does the same anywhere.
+- **One writer at a time**: a machine-wide named mutex (`Global\PendulasticSetpointWriter`, never a
+  per-session `Local\` fallback, which would let two players write) is taken before the ramp-in and
+  released after the return to 0; a second player (Designer or PLAY) refuses to start, and so does a
+  player that cannot open the lock (e.g. the other one runs as administrator). Tested in both
+  directions. It does **not** cover LabVIEW's own writers: no Manual Control or Stretch profile while
+  a player waits or plays.
+- **Optional encoder watchdog**: if the operator picks a variable holding the arm's ACTUAL position
+  (Designer *Encoder: Pick...*, or `PICK_ENCODER.bat` → `encoder_url.txt`), the player reads it every
+  5th write (50 ms, 20 ms read timeout) and stops the content and ramps the setpoint to 0 (PLAY exit 6)
+  when |actual| > limit + 3°, when the arm is further from every setpoint sent in the last 150 ms than
+  5° + 1.5 × the following error the identified plant (and its detuned copies) predicts for this file
+  (the 150 ms window absorbs network/read latency and the plant's lag; 5° covers encoder noise,
+  stiction and the 0.4–0.6° tracking RMSE measured on library swings), or after 5 failed reads in a row
+  (≈ 250 ms).
+  Before starting it refuses if the variable cannot be read, reads more than 5° from the setpoint
+  (wrong variable), or is the setpoint variable itself. The +3° is a software stop at 43° actual, not a
+  cutoff; it is there to avoid false stops (the mechanical hard stops are the last line). Each look is
+  a synchronous read of up to 20 ms inside the write loop, so a slow read delays that tick's write
+  (and a fast file then steps further, which the backstop may stop). **Follow-up, not done:** read the
+  encoder asynchronously (its own thread) so a slow read never delays a write. Not picked: play proceeds and the
+  console / status bar says **"encoder watchdog OFF"**. **Unconfirmed:** nothing in this repo lists an actual-position network variable in
+  `variables - network - RT (separate)` (only the setpoint `M1JointAngleDesired`, fallback
+  `M1AngleSetPoint`); check in Distributed System Manager whether one exists before relying on it. The
+  watchdog runs in the same host process as the player: a second opinion that moves the setpoint, not
+  an independent hardware cutoff.
+- **Not covered — the E-stop is the answer**: if writes cannot get through, the rig HOLDS the last
+  value it received; a player killed mid-play (closed window, Ctrl+Break, crash) also leaves the last
+  setpoint held.
+
+**Staged first real playback** (owner, 2026-11-17; the kit's `RIG_CHECKLIST.txt`, from
+`designer/RIG_CHECKLIST.txt`, is the operator's copy):
+
+0. Before any playback, note the arm's mechanical hard-stop angles. Confirm that the ±40° limit plus
+   the expected overshoot (the predicted delivered peak each player shows; and faults have carried
+   the arm to +63°/−81° with the Angle Limits at ±25°) leaves a clear margin to both. If it does not,
+   lower the limit for the session (Designer *Max |angle|*, or `-MaxDeg`).
+1. Nobody inside the arm's swing envelope; a person with the E-stop in hand; StretchExperiment's
+   Controller Output Range set conservatively during playback (it also changes the plant: the
+   overshoot prediction does not model saturation); P/I/D at the identified values (the prediction is
+   only valid for that loop); arm at 0. No Manual Control or Stretch profile while a player waits or
+   plays. Stop with STOP / q / Esc, never by closing the window or Ctrl+Break.
+2. 5° smoke file (`smoke_5deg.csv`, DRYRUN first) → a default MAS design at rig amplitude scale 0.3 →
+   0.5 → 0.70 (the default). Stop at the first surprise and bring `sent\` back.
+
+At ±40° the built library (64 scenarios) has 3 playable files at 1:1 (C-A0-low, C-A0-small-ok,
+D-lowlift): every other scenario releases from 55° or more (the library writes rig angle 1:1).
 
 For the rig PC as a whole (not one session): `python -m neuromech.rig_bundle` rebuilds the library and the
 Designer, then writes `neuromech/out/rig_bundle/` and `neuromech/out/rig_bundle_<date>_<sha7>.zip`: both
@@ -81,7 +223,7 @@ only, whose expected scores differ from the 1:1 library.
 **Once, before the first session:** play any player file with the log running, then
 
 ```bash
-python -m neuromech.session check-log --bin <the new .bin> --player sessions/<S>/player/R001.csv
+python -m neuromech.session check-log --bin <the new .bin> --player sessions/<S>/player/R001.csv [--sent <its sent log>]
 ```
 
 PASS means the log recorded the Player's setpoint for the whole file (it also reports how often the

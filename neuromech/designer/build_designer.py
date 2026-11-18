@@ -3,7 +3,8 @@
     python neuromech/designer/build_designer.py [--out DIR]
 
 Uses the .NET Framework 3.5 C# compiler that ships with Windows, so the exe targets the CLR 2.0 runtime
-Windows 7 has out of the box. Sources: every .cs in this folder (the parity/ console harness excluded).
+Windows 7 has out of the box. Sources: every .cs in this folder (the parity/ console harness excluded)
+plus ../labview/player/RigGuard.cs, the safety rules both players share.
 """
 from __future__ import annotations
 
@@ -16,6 +17,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 CSC = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Microsoft.NET", "Framework", "v3.5", "csc.exe")
 EXE = "PendulumDesigner.exe"
+# the playback safety rules, shared with play_setpoints.ps1 (which loads the same file with Add-Type)
+GUARD = os.path.join(os.path.dirname(HERE), "labview", "player", "RigGuard.cs")
 
 
 def build(out_dir: str = HERE) -> list[str]:
@@ -24,7 +27,7 @@ def build(out_dir: str = HERE) -> list[str]:
     DataSocket came with 64-bit LabVIEW (this one has both). Either says so if it cannot load DataSocket."""
     if not os.path.exists(CSC):
         raise SystemExit(f"no .NET 3.5 compiler at {CSC} (Windows Features -> .NET Framework 3.5)")
-    src = sorted(glob.glob(os.path.join(HERE, "*.cs")))
+    src = sorted(glob.glob(os.path.join(HERE, "*.cs"))) + [GUARD]
     os.makedirs(out_dir, exist_ok=True)
     made = []
     for name, plat in ((EXE, "x86"), (EXE.replace(".exe", "64.exe"), "anycpu")):

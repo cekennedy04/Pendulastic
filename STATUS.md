@@ -65,7 +65,22 @@ scores move. "Not verified" is stated, never implied.
 - **Rig O1–O5** (literature review, second opinion and a contrarian review; memo in the
   session notes, to be added to `docs/plans/`):
   - *Before any session:* build the Player's own `Max |setpoint|` clamp (the Angle Limit
-    fields do not bound the Player). The dry run is 9/9 in band on main (the 7/9 reading
+    fields do not bound the Player). **Built 2026-11-17 (simulation/code-tested, not yet run
+    on the rig):** both players share `labview/player/RigGuard.cs` — ±40° hard limit (operator
+    can only lower), load-time refusal incl. 600 °/s and a predicted-delivered-peak check on the
+    identified plant, per-write backstop that stops the run, no start without a setpoint
+    reading; one writer at a time (named mutex); an optional same-process encoder watchdog (the
+    actual-position variable is unconfirmed, so it reports OFF until one is picked); a staged
+    first-run checklist with a hard-stop margin step (`designer/RIG_CHECKLIST.txt`);
+    Designer default scale 0.70 and a scale-down offer for bigger live designs. At ±40°
+    3 of 64 library scenarios are playable at 1:1 (the rest release from ≥ 55°). After the PR #117
+    review: speed and predicted peak checked on every 1 ms phase (not just the 10 ms grid), Ctrl+C and
+    error paths return to 0, PLAY re-reads the setpoint after Enter, no `-PeriodMs`/`-NoReturn`,
+    return speed 1–60 °/s, no `Local\` lock fallback, 2-column rows only. Re-review: the backstop
+    and every ramp step from the last value the rig actually took, any failed write ends the play,
+    a RIG HOLDING end leaves `sent/HOLDING.flag` that the next start must acknowledge, watchdog stops
+    after 5 missed reads. Follow-up: asynchronous encoder reads. See
+    `neuromech/README.md` "Playback safety guard". The dry run is 9/9 in band on main (the 7/9 reading
     came from code without #96; see O5).
   - *O1 arm range:* widen to the scenarios' range only after the clamp exists, with
     asymmetric limits and a margin to the hard stops at least the fault overshoot seen
@@ -106,24 +121,31 @@ scores move. "Not verified" is stated, never implied.
 - **Merged 2026-11-16 (squash):** #96 (release alignment) and #90 (fall-speed check, B13;
   reference file holds only person, A0 and peak; see decision 6).
 - **Current numbers (2026-11-17, core 0.4.0 / `pt5trough-ref-2026-11-16`, with #112):**
-  `python -m neuromech.build` writes 66 scenarios (`M-catch_release_high`
-  dropped). The A-P2 and A-P3 presets are unreachable on the current scorer. The
+  `python -m neuromech.build` writes 64 scenarios (`M-catch_release_high`
+  dropped by #112; `C-wmax-low` and `R-reflex-force` dropped as duplicates, decision c). The A-P2 and A-P3 presets are unreachable on the current scorer. The
   simulated dry run delivers 9 of 9 runs in their intended band at seeds 11, 1, 3, 7
   and 42 (7 of 9 before #96).
 - **O5 preset refit (#112, merged 2026-11-17, reviewed and re-reviewed):** presets refitted to their band middles on
   the five-term scorer (`B-claspknife` 0.078 band 0 -> 0.200 band 1; `K-HM1` 0.149 ->
   0.193; `B-spasm`, `B-flexor`, `B-clonus` off their edges), `M-catch_release_high`
   dropped, and the build now exits 1 when a scenario not on the allowlist
-  (`scenarios.NEAR_EDGE_ALLOWED`, 10 probes with reasons) sits within 0.03 PT7 of a
+  (`scenarios.NEAR_EDGE_ALLOWED`, 10 probes with reasons; 8 after decision c) sits within 0.03 PT7 of a
   band edge. The `M-tone_L*` ladder is deliberately not moved (see the PR).
   Owner merged it as is (B-claspknife in band 1, release 25 -> 36 deg; the
-  `catch_release_high` profile now uses 36 deg). **Open owner decisions from the review:**
-  (a) `M-tone_L*` grades disagree with intent (L1 band 0, L3/L4 band 1+): accept, or add an
-  intent-mismatch report to the build; (b) `R-friction` (bearing friction alone) scores
-  0.0056 below the MAS 1 edge and is only allowlisted: record it as a scorer/rig finding?
-  (c) duplicate Params under two names, `C-wmax-low`/`C-f-low` and
-  `R-reflex-force`/`S-lam1`: drop one of each? Smaller follow-ups: the edge check does not
-  stop `session.plan` from playing a flagged library.
+  `catch_release_high` profile now uses 36 deg). **Review decisions a-c: decided (owner,
+  2026-11-17, "go with whatever you recommend"), implemented in the `neuromech/refit-decisions` PR:**
+  (a) the `M-tone_L*` ladder stays as is (accepted: L1 band 0, L2 band 1, L3/L4 band 1+);
+  `python -m neuromech.build` now prints an intent-mismatch report (report only, exit status
+  unchanged) with the known mismatches marked accepted (`scenarios.INTENT_MISMATCH_ACCEPTED`);
+  (b) `R-friction` stays allowlisted and is recorded as a finding (README, Findings): bearing
+  friction alone scores PT7 0.1144, 0.0056 below the MAS 1 edge, so a real rig's friction could
+  push healthy-ish presets toward MAS 1; to be checked on the real rig; (c) `C-wmax-low`
+  (= `C-f-low`) and `R-reflex-force` (= `S-lam1`) dropped, 66 -> 64 scenarios, and the build
+  exits 1 on any scenario pair that renders the same swing unless the set is in
+  `scenarios.DUPLICATE_ALLOWED` (three sets listed with reasons: `A-P1`/`B-extensor`/`B-habit1`,
+  `B-leadpipe`/`M-fall_no_ringdown`, `B-contracture`/`M-contracture_stop`; dropping those is
+  open for the owner). Smaller follow-ups: the edge check does not stop `session.plan` from
+  playing a flagged library.
 - **Release alignment (#96, merged):** rig sessions are scored from the delivered release
   (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
   found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real

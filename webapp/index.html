@@ -246,6 +246,7 @@
           <span id="pt-score-label">Real-time estimate</span>
           <span id="pt-score-value">&mdash;</span>
           <span id="pt-score-zone">&mdash;</span>
+          <span id="pt-score-zone-note" hidden></span>
         </div>
       <p id="lateral-note" class="field-status" hidden></p>
       <div id="metric-list" hidden></div>
@@ -254,8 +255,9 @@
         <details id="param-select">
           <summary>Which parameters are in this score?</summary>
           <p id="param-select-intro">
-            All seven Popovi&cacute; parameters are computed. Switch one off to
-            see what it was contributing &mdash; the remaining terms take over
+            All seven Popovi&cacute; parameters are computed; the five in the
+            scored set start ticked, so the total below matches the score above.
+            Switch one off to see what it was contributing &mdash; the remaining terms take over
             its share, so the total is always a mean over what is selected,
             never a sum with a hole in it.
           </p>
@@ -277,7 +279,12 @@
         <button id="send-to-laptop" hidden>Send to laptop</button>
         <p id="export-status"></p>
       </div>
-      <table id="result" hidden></table>
+      <!-- Every raw scored parameter, for the operator who needs it -- closed by
+           default so the result screen leads with the score, not 20 keys. -->
+      <details id="result-details" hidden>
+        <summary>All raw parameters</summary>
+        <table id="result" hidden></table>
+      </details>
     </section>
 
     <section class="view" id="view-trials">

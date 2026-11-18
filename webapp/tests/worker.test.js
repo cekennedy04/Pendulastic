@@ -351,3 +351,35 @@ test('a provenance export that throws reads as not reported, never as a lost res
   assert.deepEqual(scoringProvenance({ score_formula_id: boom, scoring_footing: boom }),
     { scoreFormulaId: null, scoringFooting: null });
 });
+
+// The research raw recorder's sequence: batches, then export, and NO finish.
+// A still log cannot score, and must still export (bench audit 2026-11-17).
+test('batch then export with no finish returns the raw log of a still recording', async () => {
+  const handle = createWorkerHandler();
+  const posted = [];
+  const post = (msg) => posted.push(msg);
+  await handle({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.5, wasmSource } }, post);
+  await handle({ type: 'batch', buf: calmBatchBuffer(200) }, post);
+  await handle({ type: 'export' }, post);
+
+  assert.deepEqual(posted.filter((m) => m.type === 'error'), []);
+  const out = posted.find((m) => m.type === 'exportResult');
+  assert.ok(out, 'export must answer with exportResult');
+  assert.ok(out.jsonl.trim().split('\n').length >= 200, 'every sample must be in the log');
+});
+
+// Errors name the request that failed, so capture.js can route each one to
+// its own consumer instead of to whichever promise happens to be waiting.
+test('every error reply names the request it answers', async () => {
+  const handle = createWorkerHandler();
+  const posted = [];
+  const post = (msg) => posted.push(msg);
+  await handle({ type: 'export' }, post); // before start: a protocol error
+  await handle({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.5, wasmSource } }, post);
+  await handle({ type: 'batch', buf: calmBatchBuffer(50) }, post);
+  await handle({ type: 'finish' }, post); // still log: unscorable
+  const errors = posted.filter((m) => m.type === 'error');
+  assert.equal(errors.length, 2);
+  assert.equal(errors[0].request, 'export');
+  assert.deepEqual(errors[1], { type: 'error', reason: 'unscorable', request: 'finish' });
+});

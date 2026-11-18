@@ -4,7 +4,7 @@
                                       [--repeat A-P1p:10] [--seed 7] [--chirp] [--no-blind]
     python -m neuromech.session score --name S1 --encoder-dir DIR [--phone-manifest FILE.json]
                                       [--accept-session-lag-ms MS] [--tracking-margin M] [--tracking-limit-ms MS]
-    python -m neuromech.session check-log --bin LOG.bin --player FILE.csv
+    python -m neuromech.session check-log --bin LOG.bin --player FILE.csv [--sent SENT.csv]
 
 CHECK-LOG answers the one bench question the program cannot answer itself: does StretchExperiment's log
 record while the Pendulum Player drives the setpoint? Play any player file, then point this at the log.
@@ -202,6 +202,15 @@ def plan(name, sids=None, groups=None, reps=1, repeat=None, seed=7, chirp=False,
         for k, r in enumerate(runs):
             w.writerow([k, r["run_id"], r["duration_s"], r["peak_deg"], f"{r['run_id']}.bin", "", "", ""] + ([] if blind else [r["sid"]]))
     pd.DataFrame(runs)[["run_id", "sid", "duration_s"]].to_csv(os.path.join(d, "key.csv"), index=False)
+    # what the rig PC's players will say about each file (neuromech.rig_guard = RigGuard.cs): verdict and the
+    # predicted delivered peak, beside the run sheet. It names no scenario, so it does not unblind the bench.
+    from neuromech import rig_guard as RG
+    gi = RG.index_rows([os.path.join(d, "player", r["run_id"] + ".csv") for r in runs])
+    RG.write_index(gi, os.path.join(d, "guard.csv"))
+    n_ref = sum(not g["ok"] for g in gi)
+    if n_ref:
+        print(f"WARNING: the players will refuse {n_ref} of {len(gi)} runs at the {RG.HARD_LIMIT_DEG:g} deg hard limit "
+              f"(guard.csv says why; a file is refused whole, never clipped)")
     json.dump(dict(name=name, created=datetime.now().isoformat(timespec="seconds"), seed=seed, reps=reps, repeat=repeat,
                    chirp=chirp, blind=blind, n_runs=len(runs), provenance=prov, scorer=dict(HEALTHY_REF=P.HEALTHY_REF, F_PLAUSIBLE_MAX_HZ=getattr(P, "F_PLAUSIBLE_MAX_HZ", None))),
               open(os.path.join(d, "session.json"), "w"), indent=1, default=float)
@@ -1037,8 +1046,26 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
 
 
 # ── check-log ───────────────────────────────────────────────────────────────
-def check_log(bin_path, player_csv, verbose=True):
-    """Is this log usable for scoring the run that played player_csv? -> dict(ok, reason, ...)."""
+GUARD_PHASES = ("refused", "guard", "watchdog", "error")
+
+
+def guard_events(sent_csv):
+    """[(phase, t_file_s, note)] for every refusal, backstop, encoder-watchdog and error row in a player's sent log
+    (sent/<file>_<time>[_dryrun|_guard|_refused].csv, written by play_setpoints.ps1 and the Designer). Logs from
+    before the guard (four columns, no note) simply have none."""
+    out = []
+    with open(sent_csv, newline="") as fh:
+        for r in csv.DictReader(fh):
+            if r.get("phase") in GUARD_PHASES:
+                out.append((r["phase"], r.get("t_file_s", ""), r.get("note") or ""))
+    return out
+
+
+def check_log(bin_path, player_csv, verbose=True, sent=None):
+    """Is this log usable for scoring the run that played player_csv? -> dict(ok, reason, ...).
+
+    sent: the player's sent log(s) for that run. Any refusal, backstop or error event in them makes the
+    run FAIL: a run the guard stopped (or a write that failed) is not a delivery of its file."""
     with open(player_csv) as fh:
         header = not fh.readline()[:1].lstrip("-").isdigit()       # a commands/<run>.csv works too
     sp = (np.genfromtxt(player_csv, delimiter=",", names=True)["setpoint_deg"] if header
@@ -1072,6 +1099,13 @@ def check_log(bin_path, player_csv, verbose=True):
             out["reason"] = "usable: the log recorded the Player's setpoint for the whole file"
             if period_ms > 25:
                 out["reason"] += f" (but it changed only every {period_ms:.0f} ms; the Player should write every ~10)"
+    if sent:
+        ev = [e for s in ([sent] if isinstance(sent, str) else sent) for e in guard_events(s)]
+        out["guard_events"] = ev
+        if ev:
+            out["ok"] = False
+            out["reason"] = (f"the player's sent log records {len(ev)} guard event(s), first '{ev[0][0]}': {ev[0][2]} "
+                             f"(the run is not a delivery of its file; the log check said: {out['reason']})")
     if verbose:
         print(f"log {os.path.basename(bin_path)}: {out['log_s']:.1f} s at {fs:.0f} Hz; file {os.path.basename(player_csv)}: {out['file_s']:.1f} s")
         if "r" in out:
@@ -1233,9 +1267,11 @@ def main(argv=None):
                         "MISMATCH FINDING printed to accept a rig the identified plant does not quite describe. It does not touch "
                         "the release check. Recorded in report.csv (tracking_margin, tracking_margin_source).")
     c = sub.add_parser("check-log"); c.add_argument("--bin", required=True); c.add_argument("--player", required=True)
+    c.add_argument("--sent", action="append", metavar="SENT.csv",
+                   help="the player's sent log for this run (repeatable): any refusal, backstop or error event in it fails the check")
     x = ap.parse_args(argv)
     if x.cmd == "check-log":
-        sys.exit(0 if check_log(x.bin, x.player)["ok"] else 1)
+        sys.exit(0 if check_log(x.bin, x.player, sent=x.sent)["ok"] else 1)
     if x.cmd == "plan":
         plan(x.name, sids=x.sids.split(",") if x.sids else None, groups=x.groups.split(",") if x.groups else None,
              reps=x.reps, repeat=x.repeat, seed=x.seed, chirp=x.chirp, blind=not x.no_blind)
