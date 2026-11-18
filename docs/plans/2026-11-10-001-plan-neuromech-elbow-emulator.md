@@ -155,15 +155,15 @@ The knee emulator rests on a test with decades of data, a validated scorer and a
 
 Verified from full text unless marked.
 
-- Lin CC, Ju MS, Lin CW. The pendulum test for evaluating spasticity of the elbow joint. Arch Phys Med Rehabil 2003;84:69–74. doi:10.1053/apmr.2003.50066 (abstract only)
-- Lin CC, Ju MS, Huang HW. Gender and age effects on elbow joint stiffness in healthy subjects. Arch Phys Med Rehabil 2005. doi:10.1016/j.apmr.2003.12.027 (abstract and second-hand values)
-- Lin CC, Ju MS, Huang HW. Muscle tone in diabetic polyneuropathy evaluated by the quantitative pendulum test. Arch Phys Med Rehabil 2007;88:368–73. doi:10.1016/j.apmr.2006.11.020 (abstract only)
-- Huang HW, Ju MS, Lin CC. Flexor and extensor muscle tone evaluated using the quantitative pendulum test in stroke and parkinsonian patients. J Clin Neurosci 2016;27:48–52. doi:10.1016/j.jocn.2015.07.031 (abstract only)
-- de Lima MSN, et al. Assessment of passive upper limb stiffness … during the pendulum test. Sensors 2023;23:3487. doi:10.3390/s23073487 (full text; equations and tables recovered second-hand)
+- Lin CC, Ju MS, Lin CW. The pendulum test for evaluating spasticity of the elbow joint. Arch Phys Med Rehabil 2003;84:69–74. doi:10.1053/apmr.2003.50066 (full text, 2026-11-18)
+- Lin CC, Ju MS, Huang HW. Gender and age effects on elbow joint stiffness in healthy subjects. Arch Phys Med Rehabil 2005;86:82–5. doi:10.1016/j.apmr.2003.12.027 (full text, 2026-11-18)
+- Lin CC, Ju MS, Huang HW. Muscle tone in diabetic polyneuropathy evaluated by the quantitative pendulum test. Arch Phys Med Rehabil 2007;88:368–73. doi:10.1016/j.apmr.2006.11.020 (full text, 2026-11-18)
+- Huang HW, Ju MS, Lin CC. Flexor and extensor muscle tone evaluated using the quantitative pendulum test in stroke and parkinsonian patients. J Clin Neurosci 2016;27:48–52. doi:10.1016/j.jocn.2015.07.031 (full text, 2026-11-18)
+- de Lima MSN, et al. Assessment of passive upper limb stiffness … during the pendulum test. Sensors 2023;23:3487. doi:10.3390/s23073487 (full text, 2026-11-18)
 - Valle MS, et al. Applicability of the instrumented pendulum test … a narrative review. Life 2025;15:535. doi:10.3390/life15040535 (full text)
 - Rahimi F, et al. Systematic review of the pendulum test. Biomed Eng Online 2020. doi:10.1186/s12938-020-00826-8 (full text)
 - Doheny EP, et al. Elbow torque estimated using a nonlinear observer. Acta Mechanica Slovaca 2017. doi:10.21496/ams.2017.003 (abstract only)
-- Winter DA. Biomechanics and Motor Control of Human Movement, 4th ed., Table 4.1 (forearm-and-hand fractions quoted from memory; verify in U1)
+- Winter DA. Biomechanics and Motor Control of Human Movement, 4th ed., Table 4.1 p. 86 and Figure 4.1 p. 83 (full text, 2026-11-18; all fractions used match)
 - De Groote F, et al. PLOS ONE 2018;13:e0205763 (the existing core)
 
 ## 11. Revision 2026-11-18: wrist, Designer, status
@@ -202,4 +202,36 @@ A limb selector (Knee / Elbow / Wrist) in the C# Designer swaps the segment, the
 - de Lima 2023: n = 7 stroke patients (MAS 0–2), no controls.
 - Lin & Rymer 1991 (IEEE TBME 38:906–918) model amplitude-dependent passive tissue, not bearing friction; the rig's Coulomb term is our own model.
 - He et al. 1997 (IEEE TBME 44:175–184) varied thresholds and reflex gain, not tone; cite De Groote 2018 for scaling tone and reflex gain together (follow-up: `profiles.py` and `scenarios.py` comments).
-- Winter Table 4.1 is added to EO1's list of texts to obtain.
+- Winter Table 4.1: obtained and verified (§11.6).
+
+### 11.6 What the full texts settle (EO1, 2026-11-18)
+
+PDFs are local only (not committed: the repo is public). Values below are as printed.
+
+**Lin apparatus (Lin 2003, p. 70–71; same in 2005, 2007, 2016).** Supine, upper arm on the bed, forearm pointing UP (vertical at 90° flexion). A 107.5 cm steel shaft pivots at its midpoint on the elbow axis; a 1.13 kg weight is fixed to its LOWER end "to increase the total inertia and counterbalance the weight of the forearm"; the wrist is strapped to the upper part through a sliding-rotary joint. Gravity (Eq 3): τg = m_a·g·L_a·sin(θ−π/2) − m_f·g·L_f·sin(θ−π/2): the forearm is an inverted pendulum, the counterweight a hanging one, gravity zero at 90°. Model (Eq 1): I·θ'' = −τg − K(θ−θe) − C·θ', I = I_a + I_f, with θe (tissue rest) fitted. Fitting: whole trajectory by SQP on z = [θe K C]; 10 Hz 4th-order Butterworth; 6 trials, out-of-1-SD trials dropped, rest averaged; 600 Hz, 15–25 s. Release from 130° after a 2-minute hold (Huang 2016 adds a mirror start at 50°). Apparatus alone: K 0, C 0.008 N·m·s/rad. **Not printed anywhere:** the apparatus's total mass m_a and inertia I_a ("estimated by Chen's method"). Lin's damping ratio is η = C / (2√(K·I)) with **tissue K only**, not K + gravity.
+
+**Consequence for our model.** `forearm_from_anthropometry`'s accessory is a point mass on the forearm's own side; Lin's counterweight is on the opposite side and the forearm is inverted. The Lin scenario needs: forearm gravity destabilising, counterweight stabilising, net gravity stiffness m_a·g·L_a − m_f·g·L_f (about 6.0 − 2.2 ≈ 3.8 N·m/rad for 1.13 kg at 0.5375 m and a 64 kg subject), and I dominated by the apparatus (≥ 0.33 kg·m² from the weight alone, plus the shaft, vs about 0.09 for the forearm). I_a must be bracketed (unknown shaft mass), not guessed.
+
+**Healthy reference.**
+
+| Source | n | K (N·m/rad) | C (N·m·s/rad) | Swings | RI |
+|---|---|---|---|---|---|
+| Lin 2003 (men, mean 59.5 y) | 11 | 1.01–4.42 (range) | 0.11–0.79 (range); η ≈ 0.15 (fig 4D) | ~4 (N4: 4 in ~7 s) | – |
+| Lin 2005 men / women | 111 / 81 | 2.62±1.04 / 2.26±0.87 | 0.73±0.40 / 0.53±0.40 | 4.09±1.94 / 5.67±2.41 | 1.45±0.20 / 1.51±0.18 |
+| Lin 2005 per body weight W | 192 | K = 0.0373·W + 0.1796 | C = 0.0089·W + 0.1013 | | |
+| Lin 2007 controls | 128 | 2.64±0.88 | 0.78±0.44 | 4.10±1.92 | 1.43±0.17 |
+| Huang 2016 controls, 130° / 50° start | 22 | ≈2.9 / ≈4.6 (bar chart) | ≈0.8 / ≈1.2 (bar chart) | ≈4.1 / ≈3.1 | ≈1.42 / ≈1.40 |
+
+Lin's C is 2–7× other elbow studies (0.1–0.3, MacKay 1986); the authors attribute part of it to the apparatus (misalignment, friction). So our model's healthy damping cannot be matched to both: an owner decision.
+
+**Measures, definitions recovered.** Swings = number of peaks and troughs of the averaged trace (no threshold printed). RI = maximal swing angle / final steady angle, both measured from the initial position (Lin 2005 fig 1; the 2005 text swaps the S and R definitions, the figures and the 2007/2016 text do not) — the same form as our RI. Lin 2003's spasticity cut-offs (fig 6): C > 0.9 or η > 0.4.
+
+**Patients.** Lin 2003: C and η rise with MAS (r .80, .78), K does not separate. Lin 2007 (diabetic polyneuropathy, n 53): C lower (0.59±0.29), K and swings unchanged, RI higher (1.56). Huang 2016 (stroke 14, PD 21, MAS 0–2): S, R, C separate patients from controls, K does not, stroke and PD not separable; **the 50° (extension) start gives larger K and C in every group, controls included**. Our model mirrors the two starts with identical tissue, so it cannot reproduce that asymmetry: an owner decision.
+
+**de Lima 2023.** n 7 stroke, MAS 0–2, seated, shoulder 0°, elbow 90°, IMU at the wrist, records 4–8 s, no sampling rate printed. No equation of motion: closed-form ω = 2π/T, ζ from the log decrement of the first two flexion reversals, K = I·ω², B = 2ζωI. Inertia printed as I = m·(L × 0.318)², a point mass at 0.318 L: 0.318 is Winter's DISTAL CoM fraction (proximal is 0.682) and there is no radius-of-gyration term, so I is about 7–10× low (0.009 vs about 0.07–0.09 kg·m²). Their worked B also uses an unexplained factor (53.1). **Confirmed: de Lima's K and B are not usable as references; their period and ζ are.** Pendulum variables did not correlate with MAS.
+
+**Winter 4th ed.** Table 4.1 p. 86, Figure 4.1 p. 83: every fraction in `upper_limb.py` matches (forearm + hand 0.022, 0.682, 0.827, length 0.146H; hand 0.006, 0.506, 0.587, 0.108H). The forearm-and-hand row is normalised to elbow-to-ulnar-styloid length. Cross-check: Lin 2007's measured controls (63.9 kg, forearm 30.3 cm) give 1.40 kg / 0.10±0.02 kg·m²; Winter with their length gives 1.41 kg / 0.088 kg·m² (test).
+
+**Lindberg 2011 (the wrist source; file `Biomech_model_spasticity.pdf`).** Wrist extension on a motor platform, about 20° flexion to 30° extension, 5 (slow) and 71, 142, 236 °/s, 400 Hz; 31 stroke, 13 controls. Not an ODE: a force decomposition from three time points, F = elastic + viscous + neural + inertial, with IC = m·a (hand mass 0.6 % body weight), EC at 1 s after the slow stretch (includes the non-linear end-range stiffness), VC at P1 = total − IC and at P2 = 0.2 × that, NC = total at P2 − (EC + VC); gravity corrected for hand and platform. NC falls under nerve block, tracks EMG (r .58–.86), rises with speed in patients only, and with total force correlates with MAS (r > .6); EC and VC do not. Enough to start W1–W3.
+
+**Still open.** Elbow range-wall stiffness (no source gives a relaxed resting angle or end-range stiffness for the elbow); Lin's apparatus mass and inertia; individual-subject traces (only plotted).

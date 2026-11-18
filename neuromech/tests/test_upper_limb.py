@@ -10,9 +10,20 @@ from neuromech import upper_limb as ul
 
 # ── U1: forearm from anthropometry ────────────────────────────────────────
 def test_winter_fractions_pinned():
-    # Provisional values (see module note). A correction must be a visible edit here.
+    # Winter 4th ed., Table 4.1 p. 86 and Figure 4.1 p. 83 (verified 2026-11-18).
     assert (ul.WINTER_FAH_MASS_FRAC, ul.WINTER_FOREARM_LEN_FRAC,
             ul.WINTER_FAH_COM_FRAC, ul.WINTER_FAH_KPROX_FRAC) == (0.022, 0.146, 0.682, 0.827)
+    assert (ul.WINTER_HAND_MASS_FRAC, ul.WINTER_HAND_LEN_FRAC,
+            ul.WINTER_HAND_COM_FRAC, ul.WINTER_HAND_KPROX_FRAC) == (0.006, 0.108, 0.506, 0.587)
+
+
+def test_forearm_matches_lin_2007_measured_controls():
+    """Lin 2007 Table 1 (128 controls): body 63.9 kg, forearm 30.3 cm (ulnar head to
+    medial epicondyle), forearm + hand 1.40 +/- 0.20 kg and 0.10 +/- 0.02 kg.m^2
+    about the elbow. Feed their measured length (as height = length / 0.146)."""
+    lc, m, J = ul.forearm_from_anthropometry(63.9, 0.303 / ul.WINTER_FOREARM_LEN_FRAC)
+    assert m == pytest.approx(1.40, abs=0.05)
+    assert 0.08 <= J <= 0.12
 
 
 def test_forearm_hang_frequency_near_1hz_and_mass_free():

@@ -53,10 +53,13 @@ import numpy as np
 from . import model_rt as rt
 
 # ── Winter (2009) Table 4.1 ─────────────────────────────────────────────────
-# PROVISIONAL: quoted, not yet checked against the printed table (the shank
-# fractions model_rt uses come from the same table and are consistent). The
-# owner is fetching the book; tests pin these numbers so a correction is one
-# visible edit.
+# Verified 2026-11-18 against the printed 4th edition: Table 4.1 (p. 86) for
+# mass, CoM and radius-of-gyration fractions (Dempster via Miller & Nelson /
+# Plagenhoef); Figure 4.1 (p. 83, Drillis & Contini) for lengths. Note the
+# "forearm and hand" row is normalised to the elbow-to-ulnar-styloid length
+# although the segment includes the hand, hence CoM 0.682 and k 0.827 from the
+# elbow. Cross-checked against Lin 2007's measured forearm + hand (1.40 kg,
+# 0.10 +/- 0.02 kg.m^2, n = 128); see the tests.
 #: Forearm + hand mass, fraction of body mass.
 WINTER_FAH_MASS_FRAC = 0.022
 #: Forearm length (elbow axis -> ulnar styloid), fraction of standing height.
