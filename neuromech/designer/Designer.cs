@@ -91,7 +91,7 @@ namespace Pendulastic
             res.Note = string.Format(inv, "Published severity axis (De Groote 2018), lambda {0:F2}: tone {1:F2} N.m, k_f {2:F3}, k_df {3:F4}.",
                                      lam, 2.0 * lam, 0.75 * lam, 0.025 * lam);
             res.Note += lam > pl + 1e-9
-                ? string.Format(inv, " PAST THE PT7 PEAK (PT7 {0:F3} at lambda {1:F2}): the falling branch. This leg is stiffer than the peak's and the score grades it milder.", pp, pl)
+                ? string.Format(inv, " PAST THE PT7 PEAK (PT7 {0:F3} at lambda {1:F2}): this leg is stiffer than the peak's and the score grades it milder. PT7 falls to a minimum near lambda 1.6 and rises slowly above it.", pp, pl)
                 : string.Format(inv, " On the rising branch (PT7 peaks at {0:F3}, lambda {1:F2}).", pp, pl);
             if (Math.Abs(basis.Scale - 1.0) > 1e-9)
             {

@@ -13,7 +13,8 @@ on is on the falling branch: a stiffer leg, graded milder.
 - **Reference scorer, played 1:1:** lambda 1.4 scores PT7 0.170, band 1. Lambda 1.0 and 1.2 are also band 1
   (0.257, 0.224). The 1+ preset (lambda 0.774) is less stiff and scores higher (0.360).
 - **The rig cannot play it 1:1.** The release is 55° from the passive rest; the guard's limit is ±40°. The
-  largest scale that passes is 0.70 (commanded and predicted delivered peak 38.5°).
+  scale the guard suggests is 0.70 (commanded and predicted delivered peak 38.5°; 0.72 is the last that
+  passes outright, and at 0.72 lambda 1.0 is still under the excursion floor at 29.9°).
 - **At 0.70 the scorer refuses it.** The excursion A0 drops from 36.1° to 25.3°, under the scorer's 30° floor
   ("Insufficient excursion"). The same happens at lambda 1.0 and 1.2. Grading lambda 1.4 needs a scale of
   0.84, a 46° release, which the guard refuses. The guard and the floor are both unchanged.
@@ -21,10 +22,15 @@ on is on the falling branch: a stiffer leg, graded milder.
   the swing down by 28° puts the lambda 1.4 swing at +27.0° to −27.1° of rig angle (predicted delivered peak
   27.6°), inside the unchanged ±40° guard, and the score does not depend on the offset: PT7 0.170, band 1, A0
   36.1°, the 1:1 library's expected values. See "The re-centred render" below.
-- **The app never finds the release at lambda 1.4**, at either scale, with or without sensor noise. The leg
-  catches 6° into the drop after 0.2 s, having reached only 55°/s; the app sees the hold being disturbed,
-  not a release, and returns "unscorable". At lambda 1.0 and 1.2 played 1:1 the app agrees with the
-  reference to 0.003 PT.
+- **On the ideal model trace the app never finds the release at lambda 1.4**, at either scale, with or
+  without sensor noise. The leg catches 6° into the drop after 0.2 s, having reached only 55°/s; the app sees
+  the hold being disturbed, not a release, and returns "unscorable". At lambda 1.0 and 1.2 played 1:1 the app
+  agrees with the reference to 0.003 PT. **This does not transfer to the rig as stated:** the arm the guard
+  models overshoots the early catch (55 → 73°/s), so on the predicted arm motion the app does find the
+  release at 1:1 and scores 0.14 to 0.18 depending on the plant. See "Second opinion" below.
+- **Re-centred files and the phone app: a capture started before PLAY ends before the swing** (simulated).
+  The re-centred lift peaks at 0.22 rad/s, under the app's 0.3 rad/s stillness guard, so the app settles when
+  the lift ends. Open; see "Second opinion".
 
 ## What limited lambda before this change
 
@@ -131,7 +137,7 @@ swing; the offset comes in along the min-jerk lift, so the file still starts at 
   rest"), `INDEX.csv` records `offset_deg`, hold, lowest angle and predicted peak per scenario, and
   `MANIFEST` records the offsets. `START_HERE.txt` names the folder and says to label such trials "recentred".
 - **What it changes at the bench.** The arm's zero is no longer where the leg hangs: the hold is at +27°, the
-  swing ends near −8° (lambda 1.4 settles 19° above the passive rest), and the player then returns to 0.
+  swing ends at −9.0° (lambda 1.4 settles 19° above the passive rest; lambda 1.2 ends at −11.8°, lambda 1.0 at −16.5°), and the player then returns to 0.
   On a vertical-plane rig the arm is therefore not hanging plumb at the model's rest; the commanded trajectory
   is position-controlled either way, but the phone's gravity reference sees the shifted angles.
 
@@ -143,8 +149,72 @@ the rest as they start above it (A-P0 spans 84°). Only the three lambda files s
 lists the rest as "fits re-centred, not shipped", and adding any is one tuple (`rig_bundle.RECENTRED_SIDS`)
 and an owner decision.
 
-The release-detection miss is independent of the rig and of this render: it is in the app, it appears 1:1 too,
-and a separate session has it.
+The release-detection miss on the model trace is independent of this render: it is in the app, it appears 1:1
+too, and a separate session has it. Whether it appears on the rig depends on the arm (next section).
+
+## Second opinion (2026-11-18)
+
+The owner asked for a contrarian review. An independent reviewer (a separate agent given the diff, not these
+conclusions; the Gemini call hung and was stopped) tried to break the guard handling, the offset-invariance,
+the C# port and this note. Everything in this section is simulation: the synthetic phone replayed through the
+app's wasm build, with the arm motion from the guard's identified plant (`rig_guard.sim_response`). Both
+experiments were re-run here and reproduced.
+
+**1. A re-centred file can end the app's trial before the swing (open).** Replaying the WHOLE rig file for
+lambda 1.4 (pulses, lift, hold, swing; capture started 3 s before the file) through the app:
+
+| file | app "released" (file time) | app "settled" (file time) | app result |
+|---|---|---|---|
+| 1:1 | 0.22 s (first sync pulse) | 18.1 s, after the swing | PT 0.175, A0 35.0° (reference 0.170) |
+| x0.70 | 0.22 s | 17.6 s | PT 0.410, A0 13.4° |
+| re-centred | 0.22 s | **6.3 s** (lift ends 6.19 s, true release 9.19 s) | PT 0.957, A0 26.0°, from the pulses and lift only |
+
+The app takes the first 5° pulse as the release on every library file (existing behaviour). It then needs 5 s
+below 0.3 rad/s to call the trial settled (`ZERO_CAPTURE_GUARD_RAD_S`, `session.rs` `advance_settle`). The 1:1
+lift peaks at 0.45 rad/s and resets that count; the re-centred lift is 27° in the same 4 s, 0.22 rad/s, and
+does not; the x0.70 lift (0.315 rad/s) clears it by 5%. So the statement above that "alignment works as on any
+other file" holds for the encoder and the command, not for the phone app. Not changed here, because every fix
+is a decision: start the capture in the hold (loses the pulses in the phone record), give the re-centred files
+a faster lift (changes the preamble that `match_trials` and the Designer assume), or change the app's settle
+rule (the app session's area). The folder's `README.txt` and `START_HERE.txt` carry the warning, and
+`INDEX.csv` has the lift speed (`lift_peak_rad_s`).
+
+**2. "The app never finds the release at lambda 1.4" is a property of the ideal trace.** The plant amplifies
+the early catch: pre-catch peak speed commanded → predicted delivered is 88 → 103°/s at lambda 1.0, 66 → 87 at
+1.2 and 55 → 73 at 1.4, against the 57.3°/s threshold. Swing-only replay of the predicted arm motion:
+
+| lambda 1.4 | release | app PT | app A0 |
+|---|---|---|---|
+| model trace (the table above) | not found | – | – |
+| arm, 1:1 or re-centred, nominal plant | found | 0.184 | 33.4° |
+| arm, 1:1, natural frequency ×0.9 | found | 0.141 | 29.7° (under the floor) |
+| arm, 1:1, natural frequency ×1.1, damping 0.18 | found | 0.175 | 32.0° |
+| arm, x0.70, all three plants | not found | – | – |
+
+Lambda 1.2 at 0.70, "release not found" on the model trace, is found on the predicted arm for all three plants
+(PT 0.19 to 0.20, A0 21° to 23°). So at the bench the app's lambda 1.4 result will depend on the rig's tuning,
+and the phone should be compared with the score of what the encoder logged, not with the 1:1 expected value.
+The mechanism given above (the catch revokes the calm qualification) matches `calibration.rs`.
+
+**3. Smaller corrections made in this note and the code.** PT7 does not keep falling: it has a minimum near
+lambda 1.6 (0.157) and rises slowly above it (0.171 at 2.0, 0.243 at 3.0; not graded from 2.8, A0 under 30°),
+so "falling branch" is right for 1.0 to 1.5 only (the Designer's text and the `scenarios.py` comment now say
+so; the new scenarios' titles are unchanged). The 0.70 and "ends near −8°" statements above were corrected. The
+re-centred files need a player limit of 28° or more, and `RIG_CHECKLIST.txt` has no stage that takes the arm to
+a large negative angle before them (the folder README now says both). `export_recentred` used the 1 kHz
+default when masking the lift; it now passes the file's rate.
+
+**4. Not changed, for the owner to know.** CI runs on Linux, where `test_designer.py` and the C# half of
+`test_rig_guard.py` are skipped (no `csc.exe`) and the `export_recentred` test is skipped (`neuromech/out` is
+not tracked). The C# port's parity is therefore held on a Windows machine only. The C# and Python scorers
+differ by 4e-7 to 6e-7 in PT7 near lambda 0.80 on identical traces (an existing difference in the `PtScore.cs`
+port); the new peak test's 1e-6 tolerance sits just above it.
+
+**What the reviewer could not break.** Guard and player handling of negative angles (limit, ramp, watchdog,
+end hold, return to 0 and every abort path are symmetric in sign); offset-invariance of the reference score
+(all 66 scenarios, offsets −60 to +200, worst PT7 difference 4e-14, also on a plant-filtered noisy trace); the
+render at eight sample rates; `DeGroote.cs` against `model_rt.simulate` at twelve other lambdas from 0 to 6
+(trace within 6e-14°); and the tables in this note.
 
 ## What changed in the code
 

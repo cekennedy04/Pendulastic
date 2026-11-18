@@ -85,7 +85,18 @@ RECENTRED_LABEL = ("RE-CENTRED RENDER (1:1 size, constant offset) - the rig's ze
                    "The lift, the hold and the swing are the 1:1 library's minus offset_deg (INDEX.csv), so the swing sits\n"
                    "about 0 and inside the 40 deg limit; the 5 deg sync pulses are unchanged. Label such trials \"recentred\".\n"
                    "Scores do not depend on the offset: the 1:1 library's expected values apply to these files.\n"
-                   "To get the 1:1 rig angle back: add offset_deg to everything after the lift (rig_bundle.undo_recentre).")
+                   "To get the 1:1 rig angle back: add offset_deg to everything after the lift (rig_bundle.undo_recentre).\n"
+                   "\n"
+                   "Needs a player limit of 28 deg or more (the checklist's -MaxDeg 25 fallback refuses all three). The fast\n"
+                   "part of the swing is at NEGATIVE rig angles: play a slow file that goes to -27 deg first if none has.\n"
+                   "\n"
+                   "PHONE APP, KNOWN PROBLEM (simulated, not yet seen on the rig): the lift in these files is only 25-27 deg\n"
+                   "in 4 s, about 0.22 rad/s at its fastest (INDEX.csv lift_peak_rad_s), which is under the app's 0.3 rad/s\n"
+                   "stillness guard. In replay the app takes the first sync pulse as the release, then counts the lift as\n"
+                   "stillness and ENDS THE TRIAL (\"settled\") about when the lift ends, 3 s BEFORE the swing. A capture\n"
+                   "started before PLAY therefore does not contain the swing. The 1:1 lift (0.45 rad/s) does not do this;\n"
+                   "the x0.70 lift (0.315 rad/s) clears the guard by 5 percent. Until this is settled, start the phone\n"
+                   "capture during the 3 s hold after the lift and check the recording contains the swing.")
 EXE_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <startup>
@@ -254,7 +265,9 @@ def recentred_render(t, sp, offset):
 
 def undo_recentre(t, rig_deg, offset):
     """A re-centred command, or what the encoder logged while it played (on the file's clock), back in the 1:1
-    library's rig angle (0 = passive rest), for anything that needs the absolute angle. The scorer does not."""
+    library's rig angle (0 = passive rest), for anything that needs the absolute angle. The scorer does not.
+    rig_deg must start at the file's first sample and stop at its last: a log that is not cut to the file, or
+    that runs on into the player's end hold and return to 0, gets the offset in the wrong place."""
     fs = 1.0 / float(t[1] - t[0])
     return np.asarray(rig_deg, float) + offset * recentre_shape(len(rig_deg), fs)
 
@@ -327,7 +340,7 @@ def export_library(out_lib, guard=None, scale=1.0):
 def export_recentred(out_lib, guard=None, sids=RECENTRED_SIDS):
     """The re-centred 1:1 render: player files <sid>_recentred.csv for `sids`, and an INDEX.csv row for EVERY
     built scenario saying whether it would pass the guard re-centred (and its offset), so the owner can see what
-    else could ship. Scenarios the 1:1 library already plays are listed as not needing it."""
+    else could ship. The plays_1to1 column marks the scenarios the 1:1 library already plays."""
     import pandas as pd
     man = pd.read_csv(os.path.join(B.OUT, "scenario_manifest.csv"))
     missing = sorted(set(sids) - set(man.sid))
@@ -349,12 +362,16 @@ def export_recentred(out_lib, guard=None, sids=RECENTRED_SIDS):
         name = r.sid + "_recentred.csv"
         if ship:
             ilc.write_player(os.path.join(out_lib, name), t, rc)
-        body = rc[recentre_shape(len(rc)) == 1.0]
+        fs = 1.0 / float(t[1] - t[0])
+        shape = recentre_shape(len(rc), fs)
+        body = rc[shape == 1.0]
+        lift = rc[(shape > 0.0) & (shape < 1.0)]
         rows.append(dict(file=name if ship else "", sid=r.sid, offset_deg=f"{off:.1f}", group=r.group, title=r.title,
                          duration_s=round(float(t[-1]), 1), hold_deg=round(float(body[0]), 1),
                          min_deg=round(float(body.min()), 1), peak_deg=round(float(np.max(np.abs(rc))), 1),
                          max_step_per_write_deg=round(per_write_rate(t, rc) * WRITE_MS / 1000.0, 2),
                          predicted_peak_deg=info.get("predicted_peak_deg", ""),
+                         lift_peak_rad_s=round(float(np.radians(np.max(np.abs(np.diff(lift))) * fs)), 3) if len(lift) > 1 else "",
                          fits_recentred="yes" if why is None else "no",
                          plays_1to1="yes" if plays_1to1 else "no",
                          checked_by="rig_guard" if guard is not None else "raw fallback",
@@ -516,6 +533,8 @@ This file says what is here and what the limits are; the checklist says what to 
                             INDEX.csv) so the hold is near +27 deg and the bottom of the drop near -27.
                             THE RIG'S ZERO IS NOT THE LEG'S REST in these files: the arm ends the swing
                             below 0 and returns to 0 at the end. Label such trials "recentred".
+                            READ ITS README.txt BEFORE USING THE PHONE APP: a capture started before PLAY
+                            ends during the slow lift, before the swing (simulated; not yet seen on the rig).
    bench_log.csv            the run sheet: one row per play, with the P, I, D and output range used
    logs\                    copy StretchExperiment's .bin logs here
    MANIFEST.txt             every file with its SHA256, the commit, and the guard status

@@ -198,7 +198,12 @@ def test_recentred_severity_axis_passes_the_unchanged_guard_and_scores_the_1_to_
     info = {}
     assert RB.guard_verdict(fn, t, rc, info) is None and info["predicted_peak_deg"] < 30.0
     assert G.HARD_LIMIT_DEG == 40.0 and RB.LIMIT_DEG == 40.0                                    # the guard is the same guard
-    body = rc[RB.recentre_shape(len(rc)) == 1.0]
+    fs = 1.0 / float(t[1] - t[0])
+    body = rc[RB.recentre_shape(len(rc), fs) == 1.0]
+    # the lift is 25-27 deg in 4 s: UNDER the app's 0.3 rad/s stillness guard (stillness.rs), where the 1:1 lift is
+    # not. Known problem, in the folder's README and the results note; this holds the number they quote.
+    lift = (RB.recentre_shape(len(rc), fs) > 0) & (RB.recentre_shape(len(rc), fs) < 1)
+    assert 0.20 < np.radians(np.abs(np.diff(rc[lift])).max() * fs) < 0.23 < 0.3 < np.radians(np.abs(np.diff(sp[lift])).max() * fs)
     assert abs(body.max() + body.min()) <= 1.0 and 24.0 < body.max() < 28.0                     # centred, about +/-27
     assert est["interpretable"] and est["mas"] == "1"
     for trace in (rc, RB.undo_recentre(t, rc, offset), sp):
@@ -240,3 +245,5 @@ def test_export_recentred_ships_only_the_owners_three_and_lists_what_else_would_
     assert by["A-P1p"]["fits_recentred"] == "yes" and "not shipped" in by["A-P1p"]["included"]
     label = open(tmp_path / RB.RECENTRED_DIR / "README.txt").read()
     assert "RE-CENTRED RENDER" in label and "offset_deg" in label and all(ord(c) < 128 for c in label)
+    assert "KNOWN PROBLEM" in label and "28 deg or more" in label
+    assert all(0.20 < float(by[s]["lift_peak_rad_s"]) < 0.23 for s in RB.RECENTRED_SIDS)

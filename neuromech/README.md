@@ -78,7 +78,9 @@ refused (no oscillation), which is the refusal path they probe.
   The guard passes them only at 0.70 (55° release), and at 0.70 the excursion (27.2°, 25.3°) is under the
   scorer's 30° floor, so both are refused; `S-lam1` is too (29.1°). In the synthetic phone replay the app
   finds no release at lambda 1.4 at either scale: the leg catches 6° into the drop at 55°/s, under the app's
-  1.0 rad/s capture threshold. Table: `docs/reports/2026-11-18-neuromech-lambda-1p4.md`.
+  1.0 rad/s capture threshold. That is the ideal model trace: on the arm motion the guard's plant predicts
+  (55 → 73°/s) the app does find the release at 1:1 and scores 0.14 to 0.18 depending on the plant.
+  Table: `docs/reports/2026-11-18-neuromech-lambda-1p4.md`.
   **Re-centred, they play at full size (owner decision, 2026-11-18):** `library_recentred/` holds the three
   swings shifted by a constant so they sit about the rig's zero and pass the unchanged ±40° guard, and the
   score does not depend on the offset:
@@ -90,6 +92,9 @@ refused (no oscillation), which is the refusal path they probe.
   | `S-lam1.4_recentred.csv` | 28° | +27.0° / −27.1° | 27.6° | PT7 0.170, band 1 |
 
   34 of the 63 scenarios refused 1:1 would fit re-centred; only these three ship (`rig_bundle.RECENTRED_SIDS`).
+  **Open problem with the phone app (simulated):** the re-centred lift peaks at 0.22 rad/s, under the app's
+  0.3 rad/s stillness guard, so a capture started before PLAY is ended by the app when the lift ends, 3 s
+  before the swing. See "Second opinion" in the note and the folder's `README.txt`.
   The Pendulum Designer reaches this axis through its *Severity axis (De Groote), lambda* mode
   (`designer/DeGroote.cs`, a port of `model_rt` held to it by `tests/test_designer.py`).
 - **Rig bearing friction alone sits just under MAS 1 (2026-11-17, scorer `pt5trough-ref-2026-11-16`, core

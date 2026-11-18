@@ -174,8 +174,9 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
         sc.append(Scenario(f"A-P{g.replace('+', 'p')}", "A", f"PT7-band preset {g} (PT7 {MAS_TARGETS[g]}, lambda {L[g]:.3f})",
                            severity(L[g]), probes=f"phone vs encoder at a programmed PT7 of {MAS_TARGETS[g]}"))
     # ── S: severity axis incl. the inverting branch ───────────────────────
-    # Every lambda here is PAST the PT7 peak (build.rising_branch_peak: 0.80), on the falling branch: the leg
-    # is stiffer than the 1+ preset and the composite grades it milder. 1.2 and 1.4 were added 2026-11-18
+    # Every lambda here is PAST the PT7 peak (build.rising_branch_peak: 0.80): the leg is stiffer than the 1+
+    # preset and the composite grades it milder. PT7 falls from the peak to a minimum near lambda 1.6 (0.157)
+    # and creeps up again above it (0.171 at 2.0, 0.243 at 3.0), so "falling branch" is true of 1.0 to 1.5 only. 1.2 and 1.4 were added 2026-11-18
     # (supervisor: a trajectory near lambda 1.4 for the phone and the scorer) and say so in their titles;
     # the five older ids keep their titles.
     for lam in (1.0, 1.2, 1.4, 1.5, 2.0, 3.0, 6.0):

@@ -26,6 +26,11 @@ scores move. "Not verified" is stated, never implied.
 2. **Whether to ship more re-centred files** (2026-11-18). The owner chose to re-centre the
    lambda 1.0, 1.2 and 1.4 swings (see workstream 1). 31 more scenarios that are refused at 1:1 would
    pass the guard re-centred; they are listed in `library_recentred/INDEX.csv` and not shipped.
+3. **Re-centred files end the phone app's trial before the swing** (2026-11-18, simulated, from the
+   contrarian review of PR #124). Their lift peaks at 0.22 rad/s, under the app's 0.3 rad/s stillness
+   guard, so a capture started before PLAY settles when the lift ends. Options: start the capture in
+   the hold, a faster lift for these files (changes the preamble), or change the app's settle rule.
+   `docs/reports/2026-11-18-neuromech-lambda-1p4.md`, "Second opinion".
 
 ## Decisions taken (owner, 2026-11-16)
 
@@ -176,6 +181,7 @@ scores move. "Not verified" is stated, never implied.
   Simulation only. Findings: lambda 1.4 passes the guard only at 0.70, where its 25.3° excursion is under
   the scorer's 30° floor (refused); and the app does not find the release at lambda 1.4 at either scale
   (early catch at 55°/s, under the 1.0 rad/s capture threshold; a separate session has the app side).
+  That is on the ideal trace; on the arm motion the guard's plant predicts the app finds it at 1:1.
   **Owner decision 2026-11-18: re-centre the swing.** `python -m neuromech.rig_bundle` now also writes
   `library_recentred/` with `S-lam1`, `S-lam1.2` and `S-lam1.4` at full size, the hold and swing shifted by
   30°, 28° and 28° so they run about ±27° and pass the unchanged ±40° guard; the score is offset-invariant,
