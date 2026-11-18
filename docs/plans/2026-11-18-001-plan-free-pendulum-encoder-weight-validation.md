@@ -14,6 +14,16 @@ banner pointing here. They were never run.
 Status: plan only. Nothing here is built or measured. Hardware fields marked **TO FILL** are not
 known yet and must not be assumed.
 
+## Open items
+
+1. **Encoder and logging: TO FILL.** Encoder model, counts per revolution, DAQ or counter card,
+   sample rate and log file format (section 2).
+2. **Acceptance limits: to confirm.** Every limit in section 8 is
+   **PROPOSED - pending supervisor confirmation before session S1**.
+3. **Phone radius: to measure.** 0.30 m is a default; measure the strap position used in
+   participant sessions (section 3.3).
+4. **Winter segment proportions: to check** against the lab's edition (sections 3.3 and 3.4).
+
 ## 1. Purpose and scope
 
 The supervisor's first goal (2026-11-18) is to show that the phone **tracks motion accurately**.
@@ -294,10 +304,11 @@ day, mode and radius; error against added mass, release angle, radius and peak s
 
 ## 8. Acceptance criteria
 
-These are proposed. The owner and supervisor confirm or change them **before S1**; after that
-they are fixed. They apply to signal A unless stated, per phone.
+**Every limit in this section is PROPOSED - pending supervisor confirmation before session S1.** The owner and supervisor
+confirm or change them before S1; after that they are fixed. They apply to signal A unless
+stated, per phone.
 
-| # | Criterion | Limit | Why this limit |
+| # | Criterion | Limit (PROPOSED - pending supervisor confirmation before session S1) | Why this limit |
 |---|---|---|---|
 | A1 | Whole-swing RMSE, each swing | every swing ≤ 5.0°; median ≤ 2.0° | 5° is the project's standing angle goal (tilted-rig protocol; gate G0 of the 2026-08-24 plan). 2° is about the static 95% limit already shown for the raw sensor (±1.7°): the app's processing should add little to it. |
 | A2 | Per-swing mean difference, pooled | bias within ±1.0°; 95% limits of agreement, including their 95% confidence bounds, within ±5.0° | Same 5° goal, stated with its uncertainty (section 9) |
@@ -309,7 +320,7 @@ they are fixed. They apply to signal A unless stated, per phone.
 | A8 | App behaviour | every Quick Test swing captured and exported with no `ERROR`; the live record equals the replay of its own raw export (parameters to 1e-6, same release sample) | The replay is only a valid stand-in for the app if this holds |
 | A9 | Synchronisation | tap lag minus fitted lag within ±20 ms on every raw swing; clock-rate ratio within 200 ppm | 20 ms is about one phone sample |
 
-Signal B (raw gyro) is held to A1, A3 and A5 as well. If B passes and A fails, the fault is in
+Signal B (raw gyro) is held to A1, A3 and A5 as well (the same proposed limits). If B passes and A fails, the fault is in
 the app's processing, not the sensor.
 
 **What counts as a failure, and what it would mean.**

@@ -8,6 +8,15 @@ today's session.
 pivot of a gravity pendulum, with the phone off the rotation axis. No MAS grade or clinical
 statement comes from it. Do not quote a PT score from here as a severity.
 
+## Open items
+
+1. Encoder model, counts per revolution, DAQ, sample rate and log format: **TO FILL** (session
+   header below).
+2. Acceptance limits A1 to A9 of the plan: **PROPOSED - pending supervisor confirmation before session S1**.
+   Do not run S1 until they are confirmed.
+3. Phone radius: measure the strap position used in participant sessions; 0.30 m is a default.
+4. Winter segment proportions behind the weight choices: check against the lab's edition.
+
 ## Session header (fill in every session)
 
 | Field | Value |
@@ -384,8 +393,9 @@ is gitignored. Nothing in it is committed.
 - [ ] Count check: rig-log rows without `ERROR` = exported phone trials = encoder files.
 - [ ] Run the analyser (`pendulum_fixture_report.py`, see the plan, section 11). Read its
       Pairing section first: it must not report a count mismatch.
-- [ ] The report states pass or fail for criteria A1 to A9 of the plan. Do not change a limit
-      or drop a swing because of what the report shows.
+- [ ] The report states pass or fail for criteria A1 to A9 of the plan. Those limits are
+      **PROPOSED - pending supervisor confirmation before session S1**. Once confirmed, do not
+      change a limit or drop a swing because of what the report shows.
 
 ## Order generator
 
