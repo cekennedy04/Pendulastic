@@ -73,6 +73,19 @@ def _modality_key(curve_name):
 # Discovery
 # ══════════════════════════════════════════════════════════════════════════
 
+def _optical_lateral_trace(path):
+    """(t, out-of-plane degrees) of the shank plate for one take, or None when
+    the markers cannot give one. The phone's trace needs the raw IMU files,
+    which this discovery does not locate; make_trial_figure draws it when a
+    caller supplies trial["lateral"]["imu"]."""
+    try:
+        import imu_optitrack_validation as validation
+        lat = validation.optical_lateral(validation.optical_curves(path))
+        return lat["series_t"], lat["series"]
+    except Exception:
+        return None
+
+
 def discover_multisource_trials():
     """Every (participant, leg, condition, trial) with valid OptiTrack PT
     params AND at least one of {mediapipe, imu} curves present. Returns a
@@ -115,6 +128,7 @@ def discover_multisource_trials():
             condition=rec["condition"], trial=rec["trial"],
             opti_t=t, opti_ang=ang, opti_params=opti_params, opti_score=opti_score,
             modalities=modalities,
+            lateral={"optitrack": _optical_lateral_trace(rec["path"]), "imu": None},
         ))
     return out
 
@@ -123,9 +137,35 @@ def discover_multisource_trials():
 # Per-trial figure
 # ══════════════════════════════════════════════════════════════════════════
 
+def _lateral_traces(trial):
+    """[(label, colour, t, series)] for whichever lateral traces the trial
+    carries. trial["lateral"] is optional: {"optitrack": (t, deg) | None,
+    "imu": (t, deg) | None}, out-of-plane rotation of the shank from the pose
+    at release (imu_optitrack_validation.optical_lateral / imu_lateral). A
+    source that is missing, empty or all-NaN is simply not drawn."""
+    out = []
+    lateral = trial.get("lateral") or {}
+    for key, label, colour in (("optitrack", "OptiTrack", "#222222"),
+                               ("imu", _MODALITY_LABEL["imu"], _MODALITY_COLOR["imu"])):
+        pair = lateral.get(key)
+        if pair is None:
+            continue
+        t, y = np.asarray(pair[0], dtype=float), np.asarray(pair[1], dtype=float)
+        if len(t) and len(t) == len(y) and np.isfinite(y).any():
+            out.append((label, colour, t, y))
+    return out
+
+
 def make_trial_figure(trial, out_path):
-    fig = plt.figure(figsize=(13, 9.5), facecolor="white")
-    gs = fig.add_gridspec(2, 1, height_ratios=[2, 1.3], hspace=0.4)
+    lateral = _lateral_traces(trial)
+    if lateral:
+        fig = plt.figure(figsize=(13, 12.0), facecolor="white")
+        gs = fig.add_gridspec(3, 1, height_ratios=[2, 0.8, 1.3], hspace=0.45)
+        table_slot = gs[2]
+    else:
+        fig = plt.figure(figsize=(13, 9.5), facecolor="white")
+        gs = fig.add_gridspec(2, 1, height_ratios=[2, 1.3], hspace=0.4)
+        table_slot = gs[1]
 
     # ── Waveform overlay ─────────────────────────────────────────────────
     ax = fig.add_subplot(gs[0])
@@ -148,8 +188,22 @@ def make_trial_figure(trial, out_path):
     ax.tick_params(labelsize=8)
     ax.legend(loc="best", fontsize=8, framealpha=0.9)
 
+    # ── Lateral (out-of-plane) motion ───────────────────────────────────
+    if lateral:
+        ax_l = fig.add_subplot(gs[1], sharex=ax)
+        ax_l.set_facecolor("#f8f9fa")
+        ax_l.grid(True, color=common.BG_GRID, linestyle="-", linewidth=0.8)
+        for label, colour, t_l, y_l in lateral:
+            ax_l.plot(t_l, y_l, color=colour, linewidth=1.3, label=label)
+        ax_l.set_xlabel("Time (s)", fontsize=9)
+        ax_l.set_ylabel("Out-of-plane (°)", fontsize=9)
+        ax_l.set_title("Lateral motion: tilt of the swing axis from the pose at release",
+                       fontsize=9)
+        ax_l.tick_params(labelsize=8)
+        ax_l.legend(loc="best", fontsize=8, framealpha=0.9)
+
     # ── Parameter / PT-score / RMSE table ───────────────────────────────
-    ax2 = fig.add_subplot(gs[1])
+    ax2 = fig.add_subplot(table_slot)
     ax2.axis("off")
     columns = ["Source", "RMSE (deg)"] + common.PARAM_DISPLAY + ["PT score"]
     rows = []
