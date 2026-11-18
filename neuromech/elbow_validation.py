@@ -14,8 +14,8 @@ What is compared, and how much of it is a real test:
   RI         PREDICTED, and OUTSIDE Lin's healthy band (1.60-1.70 vs 1.43-1.51,
              SD ~0.2). Lin's published averages cannot all be met by a linear
              model: RI 1.45 needs a total damping ratio ~0.25, Lin 2003's eta
-             ~0.15 (tissue K only, so >= the total ratio) says <= 0.15, and the
-             trace timing pins the inertia between the two (plan 11.6).
+             ~0.15 (tissue K only, so >= the total ratio) says <= 0.15; the two
+             conflict whatever the inertia or C (plan 11.7).
   spasticity a velocity-dependent drive (k_v) raises C and eta past Lin 2003's
              cut-offs (C > 0.9, eta > 0.4) while K moves little: PREDICTED.
 

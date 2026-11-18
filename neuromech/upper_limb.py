@@ -104,7 +104,8 @@ LIN_RELEASE_Q_DEG = {"flexion": 130.0, "extension": 50.0}
 #:    first trough ~1.0-1.4 s after release, which with gravity ~3.7 and K ~2.6
 #:    N.m/rad needs I ~0.6-1.2.
 #: The counterweight alone is 1.13 * 0.5375^2 = 0.33; the shaft, the wrist
-#: plate and its slide make up the rest. Every Lin check runs at both ends.
+#: plate and its slide make up the rest. Lin checks run at both ends, except where
+#: the fit is refused at one end (k_v 1.0 at 1.15; test notes say which).
 LIN_RIG_J_BRACKET = (0.55, 1.15)
 #: Damping the rig adds under load, N.m.s/rad. Lin's healthy C (0.53-0.78) is
 #: 2-7x other elbow studies (0.1-0.3, MacKay 1986); Lin 2003 attributes part to

@@ -90,6 +90,7 @@ def test_healthy_ri_matches_lin_means(rig_j):
 # ── Huang 2016: the extension start is stiffer and more damped ─────────────
 @pytest.mark.parametrize("rig_j", BOUNDS)
 def test_extension_start_fits_higher_k_and_c(rig_j):
+    """Reads back the 1.5x extensor scale (an INPUT, Huang 2016), not a prediction."""
     f = _run("flexion", rig_j)["score"]; e = _run("extension", rig_j)["score"]
     assert e.K_tissue_fit > 1.3 * f.K_tissue_fit
     assert e.B_fit > f.B_fit
@@ -106,6 +107,7 @@ def test_velocity_drive_raises_damping_past_lin_cutoff_while_k_moves_little(rig_
 
 
 def test_strong_velocity_drive_crosses_lin_eta_cutoff():
+    """J 0.55 only: at 1.15 the fit is refused (logdec, fit), see the report table."""
     s = _run("flexion", BOUNDS[0], k_v=1.0)["score"]
     assert s.eta_lin > ev.LIN_CUT_ETA and s.B_fit > ev.LIN_CUT_C
 
