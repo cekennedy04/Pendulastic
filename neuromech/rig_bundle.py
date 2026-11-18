@@ -15,20 +15,26 @@ What goes in, and why:
   PendulumDesigner.exe / PendulumDesigner64.exe (+ .exe.config)  built fresh from this checkout with the
       .NET 3.5 compiler (CLR 2.0). The .config lets the same exe run on CLR 4 too, so it starts on a stock
       Windows 7 (3.5 built in) and on Windows 8/10/11 where only 4.x is present.
-  PLAY.bat DRYRUN.bat PICK_VARIABLE.bat _run.bat play_setpoints.ps1   the plain player (CRLF, ASCII)
-  library/<sid>.csv     every built scenario that passes the playback guard (neuromech.rig_guard, when it is
-                        importable) or else the raw check (finite, |angle| <= 40 deg, <= 600 deg/s per 10 ms
-                        write), as player files (t_s, setpoint_deg, no header, starting at 0), plus R-chirp
-  library/INDEX.csv     per file: group, title, duration, peak, fastest per-write rate; scenarios left out are
-                        listed with the reason. Expected scores stay on the analysis PC (the bench grades blind).
+  PLAY.bat DRYRUN.bat PICK_VARIABLE.bat PICK_ENCODER.bat _run.bat play_setpoints.ps1 RigGuard.cs
+                        the plain player and its safety rules (usb_kit's own list; CRLF, ASCII; PLAY refuses
+                        to run without RigGuard.cs)
+  RIG_CHECKLIST.txt     the operator procedure (neuromech/designer/RIG_CHECKLIST.txt, CRLF)
+  library/<sid>.csv     every built scenario that passes neuromech.rig_guard.check_trajectory(limit_deg=40), the
+                        same rules the players apply (40 deg, 6 deg per 10 ms write, predicted delivered peak,
+                        NaN), as player files (t_s, setpoint_deg, no header, starting at 0), plus R-chirp.
+                        Every file is read back from the bundle with rig_guard.check_file before it ships.
+                        Without the guard: a raw 40 deg / 600 deg/s check and a NOT FOR MOTOR USE stamp.
+  library/INDEX.csv     per file: peak, step per write, predicted delivered peak, scale_needed, and the reason
+                        for anything left out. Expected scores stay on the analysis PC (the bench grades blind).
   library_x0.70/        the labelled scaled render (owner, 2026-11-17): everything after the 5 deg sync pulses
                         x0.70, so a 55 deg release becomes 38.5. An invariance probe only: its expected scores
-                        differ from the 1:1 library. Same guard / raw check, own INDEX.csv and README.txt.
+                        differ from the 1:1 library. Same guard check, own INDEX.csv and README.txt.
   smoke_5deg.csv        a slow 5 deg sine for first contact and the check-log test
   bench_log.csv         a blank run log for library files played with PLAY.bat
   logs/                 where StretchExperiment's .bin logs go
-  START_HERE.txt        the bench procedure, the safety limits and what is not validated (CRLF for Notepad)
-  MANIFEST.txt / MANIFEST.json   every file with SHA256, the source commit, build date, scorer/model version
+  START_HERE.txt        what is here, the limits, what is not validated; points to RIG_CHECKLIST (CRLF)
+  MANIFEST.txt / MANIFEST.json   every file with SHA256, the source commit, build date, scorer/model version,
+                        the guard status, and motor_use (YES only if the guard checked every library file)
 
 The scenario library is a build output: rerun this after any change to the scenarios or the scorer.
 """
@@ -131,7 +137,10 @@ def guard_status():
     for name in GUARD_FUNCS:
         fn = getattr(G, name, None)
         if callable(fn):
-            return fn, f"present: neuromech.rig_guard.{name} checked every library file"
+            if name == "check_trajectory":
+                return (lambda t, sp: G.check_trajectory(t, sp, limit_deg=LIMIT_DEG)), \
+                    f"present: neuromech.rig_guard.check_trajectory(limit_deg={LIMIT_DEG:g}) on every library file"
+            return fn, f"present: neuromech.rig_guard.{name} on every library file"
     raise SystemExit("neuromech.rig_guard exists but exposes none of " + ", ".join(GUARD_FUNCS)
                      + "; update rig_bundle.GUARD_FUNCS to its check function")
 
@@ -147,10 +156,10 @@ def guard_verdict(fn, t, sp, info=None):
     if isinstance(r, str):
         return r
     if info is not None:
-        for k in ("predicted_peak_deg", "scale_needed"):
+        for k in ("predicted_peak_deg", "raw_peak_deg", "max_step_deg", "scale_needed"):
             v = r.get(k) if isinstance(r, dict) else getattr(r, k, None)
-            if v is not None:
-                info[k] = round(float(v), 1) if k == "predicted_peak_deg" else v
+            if v is not None and np.isfinite(float(v)):
+                info[k] = round(float(v), 2) if k == "scale_needed" else round(float(v), 1)
     ok = r.get("ok") if isinstance(r, dict) else getattr(r, "ok", None)
     why = (r.get("reason") or r.get("reasons")) if isinstance(r, dict) else (getattr(r, "reason", None) or getattr(r, "reasons", None))
     if ok is None:
@@ -213,16 +222,16 @@ def export_library(out_lib, guard=None, scale=1.0):
             sp = scaled_render(t, sp, scale)
         peak = float(np.max(np.abs(sp)))
         info = {}
-        why = raw_verdict(t, sp)
-        if why is None and guard is not None:
-            why = guard_verdict(guard, t, sp, info)
+        why = guard_verdict(guard, t, sp, info) if guard is not None else raw_verdict(t, sp)
         name = sid + tag + ".csv"
         if why is None:
             ilc.write_player(os.path.join(out_lib, name), t, sp)
         rows.append(dict(file="" if why else name, sid=sid, scale=f"{scale:.2f}", group=group, title=title,
                          duration_s=round(float(t[-1]), 1), peak_deg=round(peak, 1),
-                         max_rate_per_write_dps=round(per_write_rate(t, sp), 0),
-                         guard_predicted_peak_deg=info.get("predicted_peak_deg", ""),
+                         max_step_per_write_deg=round(per_write_rate(t, sp) * WRITE_MS / 1000.0, 2),
+                         predicted_peak_deg=info.get("predicted_peak_deg", ""),
+                         scale_needed=info.get("scale_needed", ""),
+                         checked_by="rig_guard" if guard is not None else "raw fallback",
                          included="yes" if why is None else "NO: " + why))
 
     if scale == 1.0:
@@ -238,6 +247,23 @@ def export_library(out_lib, guard=None, scale=1.0):
         with open(os.path.join(out_lib, "README.txt"), "w", newline="\r\n", encoding="ascii") as fh:
             fh.write(SCALED_LABEL.format(scale=scale) + "\n")
     return rows
+
+
+def verify_library(folder):
+    """Read every library file back from the built bundle the way the players do (rig_guard.check_file) and
+    refuse the bundle if any fails. -> how many files were checked."""
+    from neuromech import rig_guard as G
+    n = 0
+    for sub in sorted(os.listdir(folder)):
+        if not sub.startswith("library"):
+            continue
+        for f in sorted(os.listdir(os.path.join(folder, sub))):
+            if f.endswith(".csv") and f != "INDEX.csv":
+                r = G.check_file(os.path.join(folder, sub, f), limit_deg=LIMIT_DEG)
+                if not r["ok"]:
+                    raise SystemExit(f"{sub}/{f} fails rig_guard when read back: {r['reason']}")
+                n += 1
+    return n
 
 
 def compile_designer(out_dir):
@@ -315,170 +341,151 @@ def write_manifest(folder, meta):
 
 GUARD_TEXT = {
     False: ("""!!!  DO NOT PLAY ANYTHING ON THE MOTOR WITH THIS BUNDLE  !!!
-It was built BEFORE the playback guard (hard +/-40 deg limit, 600 deg/s per write, NaN refusal) was
-merged. Its players check only the whole file's peak once before starting (Max |angle|, default 45,
-which the Designer lets an operator raise to 90); they do not clamp each value sent, have no speed
-limit, and accept a file containing NaN. Use DRY RUN only, or get a bundle whose MANIFEST says
-"playback_guard  present".""",
-            """   * THIS BUNDLE HAS NO PLAYBACK GUARD (see the top of this file): no per-write clamp, no speed or
-     acceleration limit, NaN passes the peak check. Dry run only.
+It was built WITHOUT the playback guard (neuromech.rig_guard was not importable), so its library was not
+checked by the rules the players apply. Use DRY RUN only, or get a bundle whose MANIFEST says
+"motor_use  YES".""",
+            """   * THIS BUNDLE WAS NOT CHECKED BY THE PLAYBACK GUARD (see the top of this file). Dry run only.
 """),
-    True: ("""The guard is REQUIRED for motor use and is in this build. Its limits: +/-40 deg rig angle, at
-most 600 deg/s per write. READ THE SAFETY SECTION (3) BEFORE THE ARM MOVES.""",
-           """   * The playback guard is new: its first real-motor use is tomorrow's session. Watch the first play
-     of every file with a hand on the E-stop.
+    True: ("""The players refuse anything over the 40 deg hard limit, any change over 6 deg in one 10 ms write
+(600 deg/s), anything the identified rig response predicts would overshoot past the limit, and NaN.
+They re-check every write and stop + ramp to 0 if that check fires. Every file in library\\ and
+library_x{scale:.2f}\\ passed that check when this bundle was built. It is software in one Windows
+process: THE E-STOP IS THE PROTECTION. Stop at the first surprise.""",
+           """   * The playback guard is new; this is its first use on the real motor. Watch the first play of every
+     file with a hand on the E-stop.
 """),
 }
 
 START_HERE = r"""PENDULUM RIG BUNDLE  -  START HERE
 ==================================
 Built {date} from commit {sha7} ({sha}).
-Scorer {score_id}, model {model_hash}. {n_lib} scenario files in library\ ({n_out} left out; see
-library\INDEX.csv for each one and why). {n_sc} files in library_x{scale:.2f}\ ({n_sc_out} left out):
-SCALED RENDER ({scale:.2f}x) - INVARIANCE PROBE ONLY; expected scores differ from the 1:1 library.
+Scorer {score_id}, model {model_hash}.
+{n_lib} files in library\ (1:1; {n_out} left out) and {n_sc} in library_x{scale:.2f}\ ({n_sc_out} left out).
+library_x{scale:.2f}\ is a SCALED RENDER ({scale:.2f}x) - INVARIANCE PROBE ONLY; expected scores differ from the
+1:1 library. Each folder's INDEX.csv lists every scenario and why any was left out.
 Everything here was made on the analysis PC; this PC needs no Python and nothing installed.
 
 PLAYBACK GUARD: {guard}
 {guard_banner}
 StretchExperiment's Angle Limit fields do NOT bound these players: the arm has gone to +63 / -81 deg
-with those fields at +/-25. The E-stop / amplifier fault is the real protection; keep it within reach.
-Results from this rig are NOT validated yet: do not report scores from a real rig session.
+with those fields at +/-25.
+Results from this rig are NOT validated: do not report PT scores from a rig session.
+
+>>> THE PROCEDURE IS RIG_CHECKLIST.txt. Print it or keep it open, and tick it off in order. <<<
+This file says what is here and what the limits are; the checklist says what to do.
 
 
 0. WHAT IS IN THIS FOLDER
+   RIG_CHECKLIST.txt        THE PROCEDURE: hard stops and margin, the staged first run, during a run
    PendulumDesigner.exe     the main tool (32-bit; LabVIEW 2011's DataSocket is 32-bit)
    PendulumDesigner64.exe   the same program at 64-bit, if the 32-bit one says DataSocket is not registered
-   *.exe.config             keep each beside its exe: lets it run on .NET 3.5 or .NET 4.x
-   library\                 ready-made scenario files; library\INDEX.csv lists them (peak, length, the
-                            fastest change between two 10 ms writes: the 5 deg sync pulses alone are 500)
-   library_x{scale:.2f}\            the same scenarios with everything after the sync pulses scaled by
-                            {scale:.2f}, so the 55 deg release fits under 40. SCALED RENDER: an invariance
-                            probe only; its expected scores differ from the 1:1 library. Its own
-                            INDEX.csv and README.txt list what is in and what was left out.
-   smoke_5deg.csv           a slow +/-5 deg sine, 20 s: the FIRST thing to play
-   PLAY.bat, DRYRUN.bat, PICK_VARIABLE.bat, _run.bat, play_setpoints.ps1
-                            the plain player: drag a .csv onto PLAY.bat (no Designer needed)
-   bench_log.csv            blank run log for files played with PLAY.bat (open in Excel or Notepad)
+   *.exe.config             keep each beside its exe: lets it run on .NET 3.5 (Windows 7) or 4.x (Windows 8+)
+   RigGuard.cs              the safety rules both players use. PLAY.bat refuses to run without it.
+                            Never delete or edit it.
+   PLAY.bat, DRYRUN.bat, PICK_VARIABLE.bat, PICK_ENCODER.bat, _run.bat, play_setpoints.ps1
+                            the plain player: drag a .csv onto DRYRUN.bat / PLAY.bat (no Designer needed)
+   smoke_5deg.csv           a slow +/-5 deg sine, 20 s: the first thing that moves the arm (stage b)
+   library\                 the scenarios at 1:1 rig angle that fit the limits (most do not: the
+                            release is at about 55 deg)
+   library_x{scale:.2f}\            the scenarios with everything after the 5 deg sync pulses scaled by
+                            {scale:.2f}. SCALED RENDER: an invariance probe only. Label such trials "x{scale:.2f}".
+                            INDEX.csv columns: peak, largest step per 10 ms write, predicted delivered
+                            peak, and the reason for anything left out.
+   bench_log.csv            blank run log for files played with PLAY.bat
    logs\                    copy StretchExperiment's .bin logs here
-   MANIFEST.txt             every file with its SHA256 and the commit it came from
+   MANIFEST.txt             every file with its SHA256, the commit, and the guard status
 
 
 1. PREREQUISITES ON THE RIG PC
-   * Windows 7 or later. Nothing to install: the exe runs on the .NET that Windows already has
-     (3.5 on Windows 7, 4.x on Windows 8 and later). If it will not start, see TROUBLESHOOTING.
-   * LabVIEW (it installs NI DataSocket, which is how the program reaches the setpoint variable) and
-     StretchExperiment running on the RT target as usual.
-   * NI Distributed System Manager, to look at / test the setpoint variable.
-   * Nothing else. No internet needed.
+   * Windows 7 or later. Nothing to install: the exe runs on the .NET that Windows already has.
+   * LabVIEW / StretchExperiment as usual (LabVIEW installs NI DataSocket, which the players use to
+     write the setpoint variable), and NI Distributed System Manager.
+   * No internet, no admin rights needed.
 
 
 2. COPY
-   Copy this WHOLE folder to the rig PC's desktop (do not run it from the stick: it writes trials.csv,
-   trial_files\ and sent\ beside the program). Optional: compare a file with MANIFEST.txt using
+   Copy this WHOLE folder to the rig PC's desktop and run it from there, not from the stick (it writes
+   trials.csv, trial_files\ and sent\ beside the programs). Optional check against MANIFEST.txt:
        certutil -hashfile PendulumDesigner.exe SHA256
 
 
-3. SAFETY SET-UP IN STRETCHEXPERIMENT (every session, before anything plays)
-   Working settings measured on this rig (horizontal arm):
-   * Integration Term = 0. P term sets the swing frequency (P=1 gives about 1 Hz).
-   * Derivative Term below 0.01 (0.01 already kills the swing). PID FIR Filter ON only when D > 0
-     (D without the filter screeches; the filter with D = 0 made a swing GROW, to -81 deg).
-   * Controller Output Range: +/-20 clips and damps, +/-50 does not.
-   * Known trips (amplifier fault, SET lamp flashing): speed 300 (overcurrent); P 4.5 with I 0.5 and
-     D 0.1; D 0.1 without the filter; moving within 5 deg of an angle limit.
-   * Recover from a trip: release the E-Stop, press SET on the hardware panel, Manual Control ->
-     Speed 10 -> Goto Position 0.
-   * Angle Limit CCW/CW: set them, but they only bound StretchExperiment's own Stretch profile. They do
-     NOT stop this program. Keep the E-stop within reach of whoever presses PLAY.
-   * The owner's limits (2026-11-17): at most +/-40 deg rig angle and 600 deg/s per write. Do not raise
-     the Designer's Max |angle| above 40 and do not pass a bigger -MaxDeg to PLAY.bat.
-   * The arm resonates near 6.3 Hz and over-travels fast content (about 1.3x at 3 Hz, 2x at 5 Hz).
-     Fast scenarios (clonus, the chirp) can move the arm further than the file says. Start with the
-     slow ones and watch the first play of every new file.
+3. SAFETY - the short version (RIG_CHECKLIST.txt has the full list)
+   * Before anything plays: note the arm's hard-stop angles and check there is a clear margin from
+     40 deg plus overshoot to BOTH. If not, LOWER the limit for the session (Designer "Max |angle|" only
+     goes down; PLAY.bat file -MaxDeg 25). The limit cannot be raised above 40.
+   * Nobody in the arm's swing envelope. One person whose only job is the E-stop.
+   * Staged first run, do not skip a stage, stop at the first surprise:
+       a. DRYRUN.bat smoke_5deg.csv (moves nothing)    b. PLAY.bat smoke_5deg.csv (+/-5 deg, 20 s)
+       c. Designer default MAS design at "Rig amplitude scale" 0.30    d. the same at 0.50
+       e. the same at 0.70 (the default)
+   * STOP (Designer) or q / Esc (PLAY.bat) ramps the setpoint to 0 at 10 deg/s. NEVER stop by closing the
+     window or with Ctrl+Break: the rig would hold the last setpoint. If writes fail or the program
+     crashes, the rig HOLDS the last setpoint: use the E-stop.
+   * Arm at 0 with Manual Control BEFORE starting, then leave Manual Control alone and run no Stretch
+     profile while a player waits or plays (the players cannot lock out LabVIEW's own writers; PLAY
+     re-reads the setpoint after Enter and refuses if it moved).
+   * "RIG HOLDING LAST SETPOINT -- USE THE E-STOP": E-stop. The players leave sent\HOLDING.flag and the next
+     start asks you to acknowledge it (PLAY: type YES; Designer: Yes). Do that only once the arm is at
+     rest and the link is checked.
+   * "STOPPED BY THE GUARD" / "STOPPED BY THE ENCODER WATCHDOG": do not repeat that run; bring sent\ back.
+   * Only one player can drive the rig at a time.
+   StretchExperiment settings that worked on this rig: Integration Term 0; Derivative Term below 0.01
+   (0.01 kills the swing); PID FIR Filter ON only when D > 0 (D without it screeches; the filter with
+   D = 0 made a swing grow, to -81 deg); Controller Output Range low during playback. Known trips
+   (amplifier fault, SET lamp flashing): speed 300 (overcurrent); P 4.5 with I 0.5 and D 0.1; D 0.1
+   without the filter; moving within 5 deg of an angle limit. Recover: release the E-Stop, press SET,
+   Manual Control -> Speed 10 -> Goto Position 0. The predicted peak assumes the identified P/I/D: if
+   the gains change, fast content is no longer covered by the prediction.
 
 
-4. ONCE, BEFORE THE FIRST REAL PLAY
-   a. Pick the variable: open PendulumDesigner.exe, press Pick..., expand the RT target ->
-      "variables - network - RT (separate)" -> M1JointAngleDesired, OK. (Or double-click
-      PICK_VARIABLE.bat. Both save variable_url.txt.) If picking fails, type the address, e.g.
-      psp://<rig IP>/variables - network - RT (separate)/M1JointAngleDesired
-   b. In NI Distributed System Manager, with the Angle Limits at +/-10, type 5 into that variable.
-      The arm should go to 5 deg and STAY. If it snaps back, something on the target owns the variable;
-      try M1AngleSetPoint instead. Put it back to 0.
-   c. Smoke test: arm at 0 (Manual Control -> Speed 10 -> Goto Position 0). Start StretchExperiment's
-      log. Drag smoke_5deg.csv onto PLAY.bat, press Enter. The arm sways +/-5 deg slowly for 20 s.
-      Stop the log, copy the .bin into logs\. (Back on the analysis PC this is checked with
-      `python -m neuromech.session check-log --bin <that .bin> --player smoke_5deg.csv`.)
-      If the log only records inside a Stretch trial, start a long Stretch-mode hold and play over it.
+4. ONCE: THE VARIABLES
+   * Setpoint: PICK_VARIABLE.bat (or Pick... in the Designer) -> RT target -> "variables - network - RT
+     (separate)" -> M1JointAngleDesired. Test it in Distributed System Manager with the Angle Limits at
+     +/-10: type 5, the arm goes to 5 and STAYS (if it snaps back, try M1AngleSetPoint). Back to 0.
+   * Encoder watchdog (OPTIONAL): the variable that publishes the arm's ACTUAL position is not yet
+     confirmed. Look for it in Distributed System Manager (it changes when the arm is moved by hand
+     or by Manual Control). If you find it, PICK_ENCODER.bat; otherwise every run says "encoder
+     watchdog OFF", which is expected.
 
 
 5. THE DESIGNER  (PendulumDesigner.exe)
-   Double-click it. If Windows says "Windows protected your PC", choose More info -> Run anyway (it is
-   not signed). If it says DataSocket is not registered for its width, use PendulumDesigner64.exe.
-   a. Design a movement:  "Aim at a MAS grade" (pick 0 / 1 / 1+ / 2 / 3 / 4) -> Design it.  Or tick
-      parameters and type targets, or move the knobs by hand. The right side shows the PT7 score, zone,
-      a rough MAS, the seven parameters, the rig's motion (top plot) and the knee angle the phone should
-      show (bottom plot). Check "Rig: peak ... deg" in the text: it must be under 40.
-   b. Or load a scenario: Open file... -> library\<name>.csv (see library\INDEX.csv for what each is),
-      or library_x{scale:.2f}\<name>_x{scale:.2f}.csv (scaled render; label the trial "x{scale:.2f}").
-      The Designer re-scores it with its own copy of the scorer and shows both plots.
-   c. DRY RUN FIRST, every new movement: tick "Dry run: no motion, no log", press PLAY. Nothing is sent
-      to the rig; the red cursor runs along the plots and the status line reports the timing
-      ("updates every 10 ms ..."). If the 95th percentile is over 25 ms, close other programs.
-   d. Real play: untick Dry run, type a trial label, arm at 0, start the phone, start StretchExperiment's
-      log, press PLAY and confirm. STOP ramps the arm back to 0 at 10 deg/s. At the end it holds the
-      last angle 2 s, then ramps to 0.
-   e. The trial log at the bottom fills itself in and saves trials.csv beside the program after every
-      change. Type each StretchExperiment log's file name into encoder_file, and the phone's trial number
-      into phone_trial if you can read it. The movement played is kept in trial_files\T###.csv.
-   Do not close the Designer or switch the PC off while it plays: the rig keeps the last value it was
-   sent. Use STOP and wait for "back at 0".
+   If Windows says "Windows protected your PC": More info -> Run anyway (it is not signed).
+   a. "Aim at a MAS grade" -> Design it (or targets, or the knobs). The text shows the PT7 score, the
+      seven parameters, the commanded peak AND the predicted delivered peak. Over the limit, it offers
+      to scale the movement down: say yes or change the design.
+   b. Or Open file... -> library\<name>.csv or library_x{scale:.2f}\<name>_x{scale:.2f}.csv.
+   c. Dry run first ("Dry run: no motion, no log"), then the real play: label, arm at 0, phone, log, PLAY.
+   d. Fill encoder_file (and phone_trial) in the trial log; it saves trials.csv on every change.
 
 
-6. THE PLAIN PLAYER  (no Designer)
-   Drag a library\ file onto DRYRUN.bat first (checks the file and the PC's timing, moves nothing).
-   Then: arm at 0 -> start the phone -> start the log -> drag the file onto PLAY.bat -> Enter.
-   q or Esc stops and ramps back to 0. Write the file name and the log's name in bench_log.csv.
-   PLAY.bat refuses a file over its angle limit, with a header row, or not starting at 0.
-
-
-7. WHAT TO EXPECT ON THIS (HORIZONTAL) RIG
+6. WHAT TO EXPECT ON THIS (HORIZONTAL) RIG
    The arm swings in a horizontal plane, so the phone's accelerometer sees no in-plane gravity: the
-   app's angle reads near 0 / inverted / drifting whatever is played. Only timing-type results are
-   comparable with the phone here: f (frequency), N (number of swings), the decay (tau) and whether
-   the app captures and auto-stops the trial. A0, R2n, area_ratio and PT7 from the phone are NOT
-   meaningful on this rig. The Designer's "flat-rig phone" column says which are comparable.
+   app's angle reads near 0 / inverted / drifting. Only f, N, the decay (tau) and whether the app
+   captures and auto-stops are comparable with the phone. Do NOT report PT7, A0, R2n or area_ratio
+   from this rig.
 
 
-8. WHAT IS NOT VALIDATED YET  (tell anyone who sees a result)
-{unvalidated_guard}   * The run-to-run scoring (release alignment, tracking limits from the chirp) is checked in
-     SIMULATION ONLY. Do not report scores from a real rig session yet.
-   * The scenario expectations are simulation results on the current scorer ({score_id}).
-   * The library's scenarios are not MAS settings: grades 2-4 are PT7-band presets, not clinical MAS.
-   * library_x{scale:.2f}\ is a scaled render, an invariance probe: its scores are not the 1:1 library's
-     expected values and must be reported as x{scale:.2f} runs.
+7. WHAT IS NOT VALIDATED
+{unvalidated_guard}   * The overshoot prediction uses the rig response measured from earlier logs (resonance about 6.35 Hz,
+     with a spread of variants); saturation, windup and a change of gains are not in it.
+   * Release alignment and tracking limits used to score rig runs are checked in SIMULATION ONLY.
+   * Scenario expectations are simulation results on {score_id}. Grades 2-4 are PT7-band presets,
+     not clinical MAS. library_x{scale:.2f}\ files do not have the 1:1 library's expected scores.
 
 
-9. BRING BACK  (on the stick, in this folder)
-   * trials.csv, trial_files\ and sent\  (written beside PendulumDesigner.exe)
-   * logs\  with every StretchExperiment .bin you recorded
-   * bench_log.csv if you used PLAY.bat
-   * the phone's export (and its -manifest.json)
-   * a note of the StretchExperiment settings used (P, I, D, filter, output range, speeds, limits)
-   On the analysis PC:
+8. BRING BACK  (on the stick, in this folder)
+   sent\ (every write, refusal, guard event and HOLDING.flag), trials.csv, trial_files\, logs\ with every
+   StretchExperiment .bin, bench_log.csv if PLAY.bat was used, the phone export and its -manifest.json,
+   the ticked RIG_CHECKLIST (hard-stop angles, limit used), and the StretchExperiment settings
+   (P, I, D, filter, output range, speeds, limits). On the analysis PC:
        python -m neuromech.match_trials --kit <this folder> --phone-manifest <export>-manifest.json --encoder-dir <this folder>\logs
-   pairs each trial with its phone recording and encoder log.
 
 
 TROUBLESHOOTING
-   * Exe does not start / ".NET Framework" message: keep the .exe.config beside the exe (it lets the
-     exe use .NET 4.x, built into Windows 8 and later, or .NET 3.5, built into Windows 7). Nothing needs
-     installing. If it still will not start, use PLAY.bat with library\ files instead (PowerShell only).
+   * Exe does not start: keep the .exe.config beside it. If it still will not, use PLAY.bat.
    * "NI DataSocket is not registered for this program's width": use the other exe (32 vs 64-bit).
-   * "cannot connect to psp://...": check the RT target's IP and the variable name in Distributed
-     System Manager; Pick... again.
-   * "20 writes in a row failed": the rig holds the last value it received. E-stop if the arm is not
-     where it should be, then Manual Control -> Goto Position 0.
+   * PLAY.bat says RigGuard.cs is missing: copy the whole folder again; never run PLAY.bat alone.
+   * "cannot connect to psp://...": check the RT target's IP and the variable in Distributed System Manager.
    * PLAY.bat window flashes and closes: right-click play_setpoints.ps1 -> Properties -> Unblock.
 """
 
@@ -505,13 +512,18 @@ def main(argv=None):
         shutil.rmtree(out)
     os.makedirs(out)
     exes, csc_ver = compile_designer(out)
-    for f in UK.SCRIPTS:
+    # the kit's own file list (usb_kit), so a script or guard file added there reaches this bundle too
+    for f in UK.SCRIPTS + (UK.GUARD_SRC,):
         crlf_copy(os.path.join(UK.PLAYER, f), os.path.join(out, f))
+    crlf_copy(UK.CHECKLIST, os.path.join(out, "RIG_CHECKLIST.txt"))
     UK.smoke_file(os.path.join(out, "smoke_5deg.csv"))
     guard, guard_line = guard_status()
     rows = export_library(os.path.join(out, "library"), guard)
     srows = export_library(os.path.join(out, f"library_x{LIB_SCALE:.2f}"), guard, LIB_SCALE)
     n_sc = sum(r["included"] == "yes" for r in srows)
+    rechecked = verify_library(out) if guard is not None else 0
+    motor_ok = (guard is not None and all(r["checked_by"] == "rig_guard" for r in rows + srows)
+                and rechecked == sum(r["included"] == "yes" for r in rows + srows))
     os.makedirs(os.path.join(out, "logs"))
     with open(os.path.join(out, "logs", "PUT_STRETCHEXPERIMENT_LOGS_HERE.txt"), "w", newline="\r\n") as fh:
         fh.write("Copy every StretchExperiment .bin log from this session into this folder.\n")
@@ -525,8 +537,8 @@ def main(argv=None):
                                    score_id=prov["score_formula_id"], model_hash=prov["model_hash"],
                                    n_lib=n_lib, n_out=len(rows) - n_lib, guard=guard_line,
                                    n_sc=n_sc, n_sc_out=len(srows) - n_sc, scale=LIB_SCALE,
-                                   guard_banner=GUARD_TEXT[guard is not None][0],
-                                   unvalidated_guard=GUARD_TEXT[guard is not None][1]))
+                                   guard_banner=GUARD_TEXT[motor_ok][0].format(scale=LIB_SCALE),
+                                   unvalidated_guard=GUARD_TEXT[motor_ok][1]))
     privacy_scan(out)
     meta = dict(bundle="Pendulum rig bundle (neuromech emulator)", source_commit=sha,
                 source_dirty_files=dirty, build_date_utc=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -534,8 +546,10 @@ def main(argv=None):
                 model_hash=prov["model_hash"], designer_exes=exes,
                 dotnet=".NET Framework 3.5 build (CLR 2.0); .exe.config also allows CLR 4.x",
                 compiler=csc_ver, python=platform.python_version(), playback_guard=guard_line,
-                motor_use=("allowed after the guard's own bench checks" if guard is not None
-                           else "NO: built before the playback guard merged"),
+                motor_use=("YES: every included library file passed the guard, and again when read back from "
+                           "the bundle (follow RIG_CHECKLIST.txt)" if motor_ok
+                           else "NO: the playback guard did not check every library file"),
+                guard_rechecked_files=rechecked,
                 limit_deg=LIMIT_DEG, rate_limit_dps_per_write=RATE_DPS,
                 library_files=n_lib, library_left_out=len(rows) - n_lib,
                 scaled_library=f"library_x{LIB_SCALE:.2f}: scaled render {LIB_SCALE:.2f}x after the sync pulses, invariance probe only",

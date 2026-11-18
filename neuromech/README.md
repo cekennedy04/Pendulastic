@@ -214,9 +214,10 @@ D-lowlift): every other scenario releases from 55° or more (the library writes 
 For the rig PC as a whole (not one session): `python -m neuromech.rig_bundle` rebuilds the library and the
 Designer, then writes `neuromech/out/rig_bundle/` and `neuromech/out/rig_bundle_<date>_<sha7>.zip`: both
 Designer exes (built with .NET 3.5, with an `.exe.config` that also allows CLR 4, so nothing needs installing),
-the plain player, every library scenario that passes `neuromech.rig_guard` as player files (or, without
-the guard, |angle| <= 40 deg and <= 600 deg/s per 10 ms write), `START_HERE.txt` and a SHA256 `MANIFEST`.
-A bundle built without the guard is stamped NOT FOR MOTOR USE. `library_x0.70/` holds the labelled scaled
+the plain player with `RigGuard.cs` (usb_kit's file list), `RIG_CHECKLIST.txt`, every library scenario that
+passes `rig_guard.check_trajectory(limit_deg=40)` as player files (each read back with `rig_guard.check_file`
+before it ships), `START_HERE.txt` and a SHA256 `MANIFEST` whose `motor_use` is YES only when the guard
+checked every library file (a bundle built without it is stamped NOT FOR MOTOR USE). `library_x0.70/` holds the labelled scaled
 render (everything after the sync pulses x0.70, so the 55 deg release fits under 40): an invariance probe
 only, whose expected scores differ from the 1:1 library.
 

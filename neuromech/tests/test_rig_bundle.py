@@ -80,6 +80,40 @@ def test_scaled_render_refuses_a_file_without_the_preamble():
         RB.scaled_render(t, sp, 0.70)
 
 
+def test_the_merged_guard_is_used_at_the_owners_limit():
+    fn, line = RB.guard_status()
+    assert fn is not None and "check_trajectory(limit_deg=40)" in line
+    t, sp = _preamble_file()
+    assert RB.guard_verdict(fn, t, RB.scaled_render(t, sp, 0.70)) is None      # 38.5 deg, slow swing
+    info = {}
+    why = RB.guard_verdict(fn, t, sp, info)                                     # 55 deg at 1:1
+    assert why and info["raw_peak_deg"] == 55.0 and info["predicted_peak_deg"] >= 55.0
+    nan = sp.copy(); nan[3000] = np.nan
+    assert RB.guard_verdict(fn, t, nan)
+
+
+def test_verify_library_reads_back_and_refuses_a_bad_file(tmp_path):
+    lib = tmp_path / "library_x0.70"; lib.mkdir()
+    t, sp = _preamble_file()
+    np.savetxt(lib / "ok.csv", np.column_stack([t, RB.scaled_render(t, sp, 0.70)]), fmt="%.4f", delimiter=",")
+    (lib / "INDEX.csv").write_text("file\r\n")
+    assert RB.verify_library(str(tmp_path)) == 1
+    np.savetxt(lib / "bad.csv", np.column_stack([t, sp]), fmt="%.4f", delimiter=",")
+    with pytest.raises(SystemExit):
+        RB.verify_library(str(tmp_path))
+
+
+def test_start_here_formats_both_ways():
+    for motor_ok in (True, False):
+        txt = RB.START_HERE.format(date="d", sha="s" * 40, sha7="s" * 7, score_id="x", model_hash="m", n_lib=1,
+                                   n_out=2, n_sc=3, n_sc_out=4, scale=0.70, guard="g",
+                                   guard_banner=RB.GUARD_TEXT[motor_ok][0].format(scale=0.70),
+                                   unvalidated_guard=RB.GUARD_TEXT[motor_ok][1])
+        assert "RIG_CHECKLIST.txt" in txt and "Ctrl+Break" in txt and "HOLDING.flag" in txt
+        assert ("DO NOT PLAY" in txt) is (not motor_ok)
+        assert all(ord(c) < 128 for c in txt) and "{" not in txt
+
+
 def test_privacy_scan_stops_a_personal_path_or_participant_folder(tmp_path):
     (tmp_path / "ok.txt").write_text("copy logs here\r\n")
     RB.privacy_scan(str(tmp_path))
