@@ -293,6 +293,19 @@ def main():
     emit_trial("TRIAL_PERIOD_FALLBACK", tf, 180.0 - 42.0 * ringf + creepf,
                "Damped swing settling 1 deg off its ring-down centre (period-estimate fallback)")
 
+    # The fallback's guard. A limb that drops and holds, with clonus (5 Hz) or
+    # a tail tremor (2.5 Hz) on it: prominence alone finds the beats, and
+    # centring the curve on their period read these as mild swings (PT 1.73
+    # to 0.62, 1.32 to 0.48). Their spacing is faster than
+    # PERIOD_FALLBACK_MAX_HZ, or the height pass found nothing, so the
+    # fallback must leave them exactly as they were.
+    dropc = 180.0 - 60.0 * (1 - np.exp(-tsf / 0.2)) * (tf >= 1.0)
+    emit_trial("TRIAL_DROP_CLONUS", tf, dropc + 8.0 * np.exp(-tsf) * np.sin(2 * np.pi * 5.0 * tsf),
+               "Drop and hold with decaying 5 Hz clonus (fallback guard: not centred)")
+    dropt = 180.0 - 20.0 * (1 - np.exp(-tsf / 0.3)) * (tf >= 1.0)
+    emit_trial("TRIAL_DROP_TREMOR", tf, dropt + 0.6 * np.sin(2 * np.pi * 2.5 * tf),
+               "Drop and hold with a 2.5 Hz tail tremor (fallback guard: not centred)")
+
     # Severe spasticity: a single drop with no rebound at all. N must read 0,
     # and the resting tail must not be miscounted as extra cycles.
     n2, fs2 = 400, 100.0

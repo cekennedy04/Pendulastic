@@ -135,6 +135,29 @@ fn a_swing_settling_off_its_centre_is_still_centred() {
     assert_eq!(p.tr_i, golden::TRIAL_PERIOD_FALLBACK_TR_I.to_vec(), "trough indices");
 }
 
+/// The fallback's guard: clonus or tremor on a limb that dropped and never
+/// swung must not be taken for the swing's period. Unguarded, these read
+/// PT 0.62 and 0.48 (mild) for 1.73 and 1.32.
+#[test]
+fn wobble_on_a_limb_that_never_swung_is_not_centred() {
+    let p = compute_pt_params(golden::TRIAL_DROP_CLONUS_T, golden::TRIAL_DROP_CLONUS_ANG, None, false).expect("scored");
+    close(p.n, golden::TRIAL_DROP_CLONUS_N, 1e-9, "clonus N");
+    close(p.area_ratio, golden::TRIAL_DROP_CLONUS_AREA_RATIO, 1e-6, "clonus area_ratio");
+    close(p.r2n, golden::TRIAL_DROP_CLONUS_R2N, 1e-6, "clonus R2n");
+    close(p.f, golden::TRIAL_DROP_CLONUS_F, 1e-6, "clonus f");
+    assert!(p.area_ratio > 0.5, "clonus drop read as a centred swing: area_ratio {}", p.area_ratio);
+    assert_eq!(p.pk_i, golden::TRIAL_DROP_CLONUS_PK_I.to_vec());
+    assert_eq!(p.tr_i, golden::TRIAL_DROP_CLONUS_TR_I.to_vec());
+
+    let p = compute_pt_params(golden::TRIAL_DROP_TREMOR_T, golden::TRIAL_DROP_TREMOR_ANG, None, false).expect("scored");
+    close(p.n, golden::TRIAL_DROP_TREMOR_N, 1e-9, "tremor N");
+    close(p.area_ratio, golden::TRIAL_DROP_TREMOR_AREA_RATIO, 1e-6, "tremor area_ratio");
+    close(p.r2n, golden::TRIAL_DROP_TREMOR_R2N, 1e-6, "tremor R2n");
+    assert!(p.area_ratio > 0.5, "tremor drop read as a centred swing: area_ratio {}", p.area_ratio);
+    assert_eq!(p.pk_i, golden::TRIAL_DROP_TREMOR_PK_I.to_vec());
+    assert_eq!(p.tr_i, golden::TRIAL_DROP_TREMOR_TR_I.to_vec());
+}
+
 #[test]
 fn nominal_swing_recovers_the_synthetic_frequency() {
     // The fixture is a 1.0 Hz decaying cosine. Reading that back out is a

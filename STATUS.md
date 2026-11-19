@@ -254,7 +254,7 @@ scores move. "Not verified" is stated, never implied.
   either setting, the no-refusal rule moves no score, and 7 trials (6 phone, 1 optical,
   `detrend=True`) carry the large-correction flag. A stored app record that falls back
   to the live convention says why (`analysis_refusal`).
-- **Period-estimate fallback (owner approved 2026-11-18; PR open, branch
+- **Period-estimate fallback (owner approved 2026-11-18; PR #128 open, branch
   `fix/scorer-period-fallback`; `SCORE_FORMULA_ID` `pt5troughfb-ref-2026-11-16`, core 0.4.1):**
   the scorer's first peak pass asks each extremum to stand `min_amp` above the SETTLED angle.
   A heavily damped swing rings down about a centre that is not the settled angle, so a 0.4
@@ -262,11 +262,18 @@ scores move. "Not verified" is stated, never implied.
   that pass with fewer than three extrema, which switched swing-centring off: the app read
   PT7 1.23 for 0.39 on `A-P1p`, `B-mixed` and `M-tone_L4`. When the pass finds fewer than
   three, it now retries on prominence alone; curves that already yield three are untouched.
+  The retry is guarded after independent review (unguarded it centred clonus or tremor on a
+  limb that never swung, reading 1.3 to 1.7 as 0.5 to 0.7): it is used only when the height
+  pass found at least one extremum, the retry finds at least three, and their spacing is no
+  faster than 2.0 Hz (`PERIOD_FALLBACK_MAX_HZ`, a judgement value). Known limit: wobble
+  slower than 2 Hz on a drop that never swung can still be centred (strict xfail in
+  `tests/test_pt_score.py`).
   Python, Rust and C# together. Synthetic through the app: those three now read 0.40
   (expected 0.39); `C-phi-low` 0.89 to 0.71. Library on the kinematic footing: only
-  `C-phi-low` moves, 0.827 to 0.486 (band 4 to 2). Corpus: 9 of 159 on-screen and 8 of 160
+  `C-phi-low` moves, 0.827 to 0.486 (band 4 to 2). Corpus: 9 of 159 on-screen and 7 of 160
   stored phone trials change, down from 1.10 to 1.94 to 0.36 to 0.75 on the six that move by
-  more than 0.1. **Open, owner to decide:** re-running `derive_healthy_ref.py` under the new
+  more than 0.1; all eight changed trials with an optical pair move towards their optical
+  score. **Open, owner to decide:** re-running `derive_healthy_ref.py` under the new
   scorer admits one more control trial (38 for 37) and would move the trial medians slightly
   (`f` 0.9501 to 0.9471, `area_ratio` 0.1678 to 0.1722, `phi_max_ratio` 0.6264 to 0.6256);
   `HEALTHY_REF` is NOT re-derived in this PR.
