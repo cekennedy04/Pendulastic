@@ -30,6 +30,10 @@ namespace Pendulastic
         public const double DefaultScale = 0.70;
         public double Scale = DefaultScale;
         public double SwingS = 15.0;           // record length after release
+        // NaN = the kinematic stand-in below. A number = the published severity axis (De Groote 2018) at this
+        // lambda, simulated by DeGroote.cs, the port of neuromech/model_rt.py: then only Scale and SwingS are
+        // read, and every other knob is ignored (the leg, its damping and its 55 deg rest are the model's own).
+        public double Lambda = double.NaN;
 
         public Knobs Clone() { return (Knobs)MemberwiseClone(); }
     }
@@ -52,6 +56,7 @@ namespace Pendulastic
         /// <summary>Swing in leg (unscaled) rig degrees at 1 kHz from release.</summary>
         public static double[] Swing(Knobs k)
         {
+            if (!double.IsNaN(k.Lambda)) return DeGroote.SwingRigDeg(k.Lambda, k.SwingS);
             int n = (int)Math.Round(k.SwingS * FsRig);
             double dt = 1.0 / FsRig, wn = 2 * Math.PI * k.FreqHz;
             int lag = Math.Max(0, (int)Math.Round(k.ReflexDelayMs / 1000.0 * FsRig));

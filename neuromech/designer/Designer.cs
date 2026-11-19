@@ -51,6 +51,58 @@ namespace Pendulastic
             return new DesignResult { Knobs = k, Movement = m, Metrics = Scoring.Score(m) };
         }
 
+        // ── the published severity axis (De Groote 2018), by lambda ──────────────────────────────────────
+        static double peakLam = double.NaN, peakPt7 = double.NaN;
+
+        static Knobs AxisKnobs(double lam, double scale)
+        {
+            return new Knobs { Lambda = lam, Scale = scale, SwingS = DeGroote.DurationS };
+        }
+
+        /// <summary>PT7 the scorer gives the axis at this lambda played 1:1: neuromech.build.pt7_at.</summary>
+        public static double? Pt7At(double lam) { return Evaluate(AxisKnobs(lam, 1.0)).Metrics.Pt7; }
+
+        /// <summary>(lambda, PT7) where the axis stops rising: neuromech.build.rising_branch_peak (0 to 2 in 0.05
+        /// steps, 1:1). Measured, not hard-coded: it moves whenever the scorer's reference constants move.</summary>
+        public static void RisingBranchPeak(out double lam, out double pt7)
+        {
+            if (double.IsNaN(peakLam))
+            {
+                double bl = 0.0, bv = Pt7At(0.0) ?? 0.0;
+                for (double l = 0.05; l <= 2.0 + 1e-9; l += 0.05)
+                {
+                    double? v = Pt7At(l);
+                    if (v.HasValue && v.Value > bv) { bl = l; bv = v.Value; }
+                }
+                peakLam = bl; peakPt7 = bv;
+            }
+            lam = peakLam; pt7 = peakPt7;
+        }
+
+        /// <summary>The published severity axis at lambda, at the basis' rig amplitude scale. The other knobs are
+        /// not used. The note says which side of the PT7 peak it is on and what the 1:1 library swing scores.</summary>
+        public static DesignResult ForLambda(double lam, Knobs basis)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            // the basis' other knobs ride along unused, so a scale-down or a reload shows them unchanged
+            Knobs k = basis.Clone(); k.Lambda = lam; k.SwingS = DeGroote.DurationS;
+            var res = Evaluate(k);
+            double pl, pp; RisingBranchPeak(out pl, out pp);
+            res.Note = string.Format(inv, "Published severity axis (De Groote 2018), lambda {0:F2}: tone {1:F2} N.m, k_f {2:F3}, k_df {3:F4}.",
+                                     lam, 2.0 * lam, 0.75 * lam, 0.025 * lam);
+            res.Note += lam > pl + 1e-9
+                ? string.Format(inv, " PAST THE PT7 PEAK (PT7 {0:F3} at lambda {1:F2}): this leg is stiffer than the peak's and the score grades it milder. PT7 falls to a minimum near lambda 1.6 and rises slowly above it.", pp, pl)
+                : string.Format(inv, " On the rising branch (PT7 peaks at {0:F3}, lambda {1:F2}).", pp, pl);
+            if (Math.Abs(basis.Scale - 1.0) > 1e-9)
+            {
+                var one = Evaluate(AxisKnobs(lam, 1.0)).Metrics;
+                res.Note += string.Format(inv, " Scored here at rig amplitude scale {0:F2}; played 1:1 it scores PT7 {1} (the library's expected value).",
+                                          basis.Scale, one.Pt7.HasValue ? one.Pt7.Value.ToString("F3", inv) : "-");
+            }
+            res.Note += " Only the rig amplitude scale knob applies; the other knobs are not used.";
+            return res;
+        }
+
         public static DesignResult ForGrade(string grade, Knobs basis)
         {
             double target = Pt7Target(grade);
