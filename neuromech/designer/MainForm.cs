@@ -25,11 +25,11 @@ namespace Pendulastic
         string EncFile { get { return Path.Combine(home, "encoder_url.txt"); } }
 
         // design
-        RadioButton rbMas, rbParams, rbHand;
+        RadioButton rbMas, rbParams, rbHand, rbLam;
         ComboBox cbMas;
         readonly Dictionary<string, CheckBox> tick = new Dictionary<string, CheckBox>();
         readonly Dictionary<string, TextBox> aim = new Dictionary<string, TextBox>();
-        NumericUpDown nFreq, nDamp, nGain, nThr, nTone, nDepth, nScale;
+        NumericUpDown nFreq, nDamp, nGain, nThr, nTone, nDepth, nScale, nLam;
         Button bDesign, bOpen, bSave;
         // result + plot
         TextBox tResult;
@@ -108,7 +108,7 @@ namespace Pendulastic
             top.Panel1.Controls.Add(left);
 
             // 1. what to design
-            var g1 = Group("1  What movement?", 380, 300);
+            var g1 = Group("1  What movement?", 380, 328);
             rbMas = new RadioButton { Text = "Aim at a MAS grade:", Left = 10, Top = 22, Width = 150, Checked = true };
             cbMas = new ComboBox { Left = 165, Top = 20, Width = 60, DropDownStyle = ComboBoxStyle.DropDownList };
             cbMas.Items.AddRange(Designer.Grades); cbMas.SelectedItem = "2";
@@ -125,6 +125,12 @@ namespace Pendulastic
             }
             rbHand = new RadioButton { Text = "By hand (use the knobs below)", Left = 10, Top = y + 2, Width = 300 };
             g1.Controls.Add(rbHand);
+            // the published severity axis by its one knob, lambda (DeGroote.cs = neuromech/model_rt.py). Past the
+            // PT7 peak (about 0.80) the score FALLS as the leg stiffens; the result text says which side it is on
+            rbLam = new RadioButton { Text = "Severity axis (De Groote), lambda:", Left = 10, Top = y + 28, Width = 232 };
+            nLam = new NumericUpDown { Left = 245, Top = y + 27, Width = 80, Minimum = 0m, Maximum = 3m, Value = 1.40m, DecimalPlaces = 2, Increment = 0.05m };
+            nLam.ValueChanged += delegate { if (rbLam.Checked) Redesign(); };
+            g1.Controls.Add(rbLam); g1.Controls.Add(nLam);
             bDesign = new Button { Text = "Design it", Left = 250, Top = 20, Width = 110, Height = 28, Font = new Font(Font, FontStyle.Bold) };
             bDesign.Click += delegate { Redesign(); };
             g1.Controls.Add(bDesign);
@@ -204,7 +210,13 @@ namespace Pendulastic
             gl.Controls.Add(grid); gl.Controls.Add(bar);
 
             foreach (var n in new[] { nFreq, nDamp, nGain, nThr, nTone, nDepth, nScale })
-                n.ValueChanged += delegate { if (!suppressKnobEvents) { rbHand.Checked = true; Rescore(); } };
+                n.ValueChanged += delegate(object sender, EventArgs e)
+                {
+                    if (suppressKnobEvents) return;
+                    // on the severity axis the rig amplitude scale is the one knob that applies: stay on the axis
+                    if (rbLam.Checked && sender == nScale) { Redesign(); return; }
+                    rbHand.Checked = true; Rescore();
+                };
         }
 
         static GroupBox Group(string text, int w, int h) { return new GroupBox { Text = text, Width = w, Height = h }; }
@@ -272,8 +284,15 @@ namespace Pendulastic
                     current = Designer.ForParams(targets, basis);
                     currentDesign = "aim " + string.Join(" ", desc.ToArray());
                 }
+                else if (rbLam.Checked)
+                {
+                    double lam = (double)nLam.Value, pl, pp;
+                    current = Designer.ForLambda(lam, basis);
+                    Designer.RisingBranchPeak(out pl, out pp);
+                    currentDesign = "severity axis lambda " + lam.ToString("F2", Inv) + (lam > pl + 1e-9 ? " (falling branch)" : "");
+                }
                 else { current = Designer.Evaluate(basis); currentDesign = "by hand"; current.Note = ""; }
-                if (current.Knobs != null) KnobsToUi(current.Knobs);
+                if (current.Knobs != null && double.IsNaN(current.Knobs.Lambda)) KnobsToUi(current.Knobs);
                 Show(current);
             }
             finally { Cursor = Cursors.Default; }

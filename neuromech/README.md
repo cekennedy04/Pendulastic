@@ -11,7 +11,7 @@ Run everything from the repo root with the project venv (`.venv/Scripts/python.e
 ## 1. Build the scenario library (once, or after a model change)
 
 ```bash
-python -m neuromech.build                # 64 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
+python -m neuromech.build                # 66 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
 ```
 
 | Group | What | Source |
@@ -46,7 +46,7 @@ built); the library is still written. Presets meant to sit in a band are refitte
 `build.fit_param` (the ladder's bisection, on one other parameter) and listed in `scenarios.BAND_MIDDLE`;
 scenarios whose purpose is the edge or an out-of-range parameter (S axis, C, R, HESS's unscaled values) are
 allowlisted, each with its reason. `--allow-near-edge` builds anyway. On `pt5trough-ref-2026-11-16`
-(2026-11-17, 64 scenarios): nothing flagged, 8 allowlisted (`S-lam1`, `S-lam6`, `C-f-low`, `C-f-high`,
+(2026-11-18, 66 scenarios): nothing flagged, 8 allowlisted (`S-lam1`, `S-lam6`, `C-f-low`, `C-f-high`,
 `R-friction`, `R-reflex-vel`, `R-reflex-len`, `H-HM3`).
 
 **Duplicate check (owner decision, 2026-11-17).** The build also **exits 1** if two scenarios render the same
@@ -73,6 +73,30 @@ refused (no oscillation), which is the refusal path they probe.
 
 ### Findings
 
+- **Past the PT7 peak the playable swing is not gradable, and the app misses the release (2026-11-18).**
+  `S-lam1.2` and `S-lam1.4` (added 2026-11-18, falling branch) score PT7 0.224 and 0.170, band 1, played 1:1.
+  The guard passes them only at 0.70 (55° release), and at 0.70 the excursion (27.2°, 25.3°) is under the
+  scorer's 30° floor, so both are refused; `S-lam1` is too (29.1°). In the synthetic phone replay the app
+  finds no release at lambda 1.4 at either scale: the leg catches 6° into the drop at 55°/s, under the app's
+  1.0 rad/s capture threshold. That is the ideal model trace: on the arm motion the guard's plant predicts
+  (55 → 73°/s) the app does find the release at 1:1 and scores 0.14 to 0.18 depending on the plant.
+  Table: `docs/reports/2026-11-18-neuromech-lambda-1p4.md`.
+  **Re-centred, they play at full size (owner decision, 2026-11-18):** `library_recentred/` holds the three
+  swings shifted by a constant so they sit about the rig's zero and pass the unchanged ±40° guard, and the
+  score does not depend on the offset:
+
+  | file | offset | hold / lowest | predicted peak | score re-centred = 1:1 expected |
+  |---|---|---|---|---|
+  | `S-lam1_recentred.csv` | 30° | +25.0° / −25.0° | 25.2° | PT7 0.257, band 1 |
+  | `S-lam1.2_recentred.csv` | 28° | +27.0° / −27.2° | 27.6° | PT7 0.224, band 1 |
+  | `S-lam1.4_recentred.csv` | 28° | +27.0° / −27.1° | 27.6° | PT7 0.170, band 1 |
+
+  34 of the 63 scenarios refused 1:1 would fit re-centred; only these three ship (`rig_bundle.RECENTRED_SIDS`).
+  **Open problem with the phone app (simulated):** the re-centred lift peaks at 0.22 rad/s, under the app's
+  0.3 rad/s stillness guard, so a capture started before PLAY is ended by the app when the lift ends, 3 s
+  before the swing. See "Second opinion" in the note and the folder's `README.txt`.
+  The Pendulum Designer reaches this axis through its *Severity axis (De Groote), lambda* mode
+  (`designer/DeGroote.cs`, a port of `model_rt` held to it by `tests/test_designer.py`).
 - **Rig bearing friction alone sits just under MAS 1 (2026-11-17, scorer `pt5trough-ref-2026-11-16`, core
   0.4.0).** `R-friction` (the rig's own dry bearing friction, `rig_params()`, no simulated spasticity) scores
   PT7 0.1144, 0.0056 below the 0/1 edge (0.12); `R-friction-heavy` (0.4 N.m) scores 0.1748, band 1.
@@ -217,7 +241,7 @@ Pendulum Designer — take their rules from one file, `labview/player/RigGuard.c
 2. 5° smoke file (`smoke_5deg.csv`, DRYRUN first) → a default MAS design at rig amplitude scale 0.3 →
    0.5 → 0.70 (the default). Stop at the first surprise and bring `sent\` back.
 
-At ±40° the built library (64 scenarios) has 3 playable files at 1:1 (C-A0-low, C-A0-small-ok,
+At ±40° the built library (66 scenarios) has 3 playable files at 1:1 (C-A0-low, C-A0-small-ok,
 D-lowlift): every other scenario releases from 55° or more (the library writes rig angle 1:1).
 
 For the rig PC as a whole (not one session): `python -m neuromech.rig_bundle` rebuilds the library and the

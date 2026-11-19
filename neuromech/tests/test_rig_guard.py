@@ -236,7 +236,7 @@ def guardtest(tmp_path_factory):
     out = tmp_path_factory.mktemp("guardtest")
     exe = str(out / "GuardTest.exe")
     src = [os.path.join(PLAYER, "RigGuard.cs")] + [os.path.join(DESIGNER, f) for f in
-           ("RigPlayer.cs", "PendulumModel.cs", "Designer.cs", "Scoring.cs", "PtScore.cs", os.path.join("selftest", "GuardTest.cs"))]
+           ("RigPlayer.cs", "PendulumModel.cs", "DeGroote.cs", "Designer.cs", "Scoring.cs", "PtScore.cs", os.path.join("selftest", "GuardTest.cs"))]
     r = subprocess.run([CSC, "-nologo", "-optimize+", "-out:" + exe, "-r:System.Core.dll"] + src, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
     return exe

@@ -5,10 +5,10 @@
 Every case is a (t, angle, release_t) triple fed to neuromech.build.score_angle on the Python
 side and Pendulastic.PtScore.ScoreAngle on the C# side. Three families:
 
-  scenario-trace/<sid>  the 62 emulator scenarios, built exactly as build.score builds them
+  scenario-trace/<sid>  the emulator scenarios (66), built exactly as build.score builds them
                         (Pendulastic = 180 + model angle on a 100 Hz grid, a 3 s hold at the
                         release angle, the D-wobble hold oscillation) -- the expected values
-  scenario-rig/<sid>    the same 62 as the rig plays them: the 1 kHz setpoint CSV mapped the way
+  scenario-rig/<sid>    the same 66 as the rig plays them: the 1 kHz setpoint CSV mapped the way
                         session._score_trace maps a recorded rig angle (180 + rest + rig, from
                         0.05 s before the hold), so the resampler is exercised at 1 kHz
   random/<k>            damped oscillators with a velocity-gated catch: f 0.4-4 Hz, damping,

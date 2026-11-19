@@ -23,6 +23,14 @@ scores move. "Not verified" is stated, never implied.
 
 1. **Contacting GitHub to purge `refs/pull/90`**, which still holds commits with clinical
    fields. The owner will decide later; both branches that carried them are deleted.
+2. **Whether to ship more re-centred files** (2026-11-18). The owner chose to re-centre the
+   lambda 1.0, 1.2 and 1.4 swings (see workstream 1). 31 more scenarios that are refused at 1:1 would
+   pass the guard re-centred; they are listed in `library_recentred/INDEX.csv` and not shipped.
+3. **Re-centred files end the phone app's trial before the swing** (2026-11-18, simulated, from the
+   contrarian review of PR #124). Their lift peaks at 0.22 rad/s, under the app's 0.3 rad/s stillness
+   guard, so a capture started before PLAY settles when the lift ends. Options: start the capture in
+   the hold, a faster lift for these files (changes the preamble), or change the app's settle rule.
+   `docs/reports/2026-11-18-neuromech-lambda-1p4.md`, "Second opinion".
 
 ## Decisions taken (owner, 2026-11-16)
 
@@ -73,7 +81,7 @@ scores move. "Not verified" is stated, never implied.
     actual-position variable is unconfirmed, so it reports OFF until one is picked); a staged
     first-run checklist with a hard-stop margin step (`designer/RIG_CHECKLIST.txt`);
     Designer default scale 0.70 and a scale-down offer for bigger live designs. At ±40°
-    3 of 64 library scenarios are playable at 1:1 (the rest release from ≥ 55°). After the PR #117
+    3 of 66 library scenarios are playable at 1:1 (the rest release from ≥ 55°). After the PR #117
     review: speed and predicted peak checked on every 1 ms phase (not just the 10 ms grid), Ctrl+C and
     error paths return to 0, PLAY re-reads the setpoint after Enter, no `-PeriodMs`/`-NoReturn`,
     return speed 1–60 °/s, no `Local\` lock fallback, 2-column rows only. Re-review: the backstop
@@ -121,7 +129,7 @@ scores move. "Not verified" is stated, never implied.
 - **Merged 2026-11-16 (squash):** #96 (release alignment) and #90 (fall-speed check, B13;
   reference file holds only person, A0 and peak; see decision 6).
 - **Current numbers (2026-11-17, core 0.4.0 / `pt5trough-ref-2026-11-16`, with #112):**
-  `python -m neuromech.build` writes 64 scenarios (`M-catch_release_high`
+  `python -m neuromech.build` writes 66 scenarios (64 until 2026-11-18; `M-catch_release_high`
   dropped by #112; `C-wmax-low` and `R-reflex-force` dropped as duplicates, decision c, #115
   merged 2026-11-17). The A-P2 and A-P3 presets are unreachable on the current scorer. The
   simulated dry run delivers 9 of 9 runs in their intended band at seeds 11, 1, 3, 7
@@ -160,14 +168,26 @@ scores move. "Not verified" is stated, never implied.
   staged per `neuromech/designer/RIG_CHECKLIST.txt`.** Not covered by software: closing the
   window, Ctrl+Break or a crash leaves the rig holding; no independent hardware cutoff.
 - **USB bundle for the rig PC (#114, merged 2026-11-17, reviewed):** `python -m neuromech.rig_bundle` builds the Designer
-  (.NET 2/4 dual config, no install), the guarded kit and `library/` (1:1, 3 of 64 + chirp) and
-  `library_x0.70/` (labelled 0.70× render, 55 of 64), each file re-checked by the guard;
+  (.NET 2/4 dual config, no install), the guarded kit and `library/` (1:1, 3 of 66 + chirp) and
+  `library_x0.70/` (labelled 0.70× render, 57 of 66), each file re-checked by the guard;
   `R-chirp` left out (owner, 2026-11-17: predicted 22° and ~970°/s at the arm).
 - **Release alignment (#96, merged):** rig sessions are scored from the delivered release
   (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
   found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real
   rig session yet:** the fixed 25 ms tracking limit suits only the simulated plant.
-- **Open PRs:** none for this workstream.
+- **Severity axis past the PT7 peak (branch `claude/neuromech-lambda-1p4-b7244a`, PR open, not reviewed):**
+  adds `S-lam1.2` and `S-lam1.4` (falling branch; PT7 0.224 and 0.170, band 1, played 1:1) and a lambda mode
+  in the Designer (`designer/DeGroote.cs`, a C# port of `model_rt` held to Python by `test_designer.py`).
+  Simulation only. Findings: lambda 1.4 passes the guard only at 0.70, where its 25.3° excursion is under
+  the scorer's 30° floor (refused); and the app does not find the release at lambda 1.4 at either scale
+  (early catch at 55°/s, under the 1.0 rad/s capture threshold; a separate session has the app side).
+  That is on the ideal trace; on the arm motion the guard's plant predicts the app finds it at 1:1.
+  **Owner decision 2026-11-18: re-centre the swing.** `python -m neuromech.rig_bundle` now also writes
+  `library_recentred/` with `S-lam1`, `S-lam1.2` and `S-lam1.4` at full size, the hold and swing shifted by
+  30°, 28° and 28° so they run about ±27° and pass the unchanged ±40° guard; the score is offset-invariant,
+  so they are graded at the 1:1 expected values (PT7 0.257, 0.224, 0.170, band 1). In these files the rig's
+  zero is not the passive rest. Note: `docs/reports/2026-11-18-neuromech-lambda-1p4.md`.
+- **Open PRs:** the lambda 1.4 PR above.
 - **Chirp-derived tracking limit (#107, merged 2026-11-17):** each
   run is held to what the plant identified from the session's chirp (R000) predicts,
   with a release check against that plant, a session-level MODEL MISMATCH FINDING, a hold
