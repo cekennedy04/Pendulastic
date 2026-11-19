@@ -121,66 +121,9 @@ def clusters_from_csv(path: str):
     return t, _cluster(shank), _cluster(thigh), fps
 
 
-def _continuous(v: np.ndarray) -> np.ndarray:
-    """Flip each row to stay in the previous finite row's hemisphere."""
-    out = v.copy()
-    prev = None
-    for i in range(len(out)):
-        if not np.isfinite(out[i]).all():
-            continue
-        if prev is not None and float(out[i] @ prev) < 0.0:
-            out[i] = -out[i]
-        prev = out[i]
-    return out
-
-
-def plate_frames(triangle: np.ndarray) -> np.ndarray:
-    """(n, 3, 3) orthonormal frame of a marker triangle, NaN where untracked.
-
-    Built only from quantities that do not depend on which marker Motive
-    called 1, 2 or 3, so a re-labelled frame cannot turn into a jump, and
-    nothing about the limb's pose is assumed:
-
-      e3  the plate normal. Its sign is not determined by the shape, so it is
-          carried by continuity in time. The normal is close to the swing
-          axis, which barely moves in a pendulum test, so continuity holds
-          across a tracking gap however far the shank swung meanwhile.
-      e1  along the longest edge (the best-conditioned direction on the
-          plate), pointing so that e1 x (midpoint of that edge -> the third
-          marker) is along e3. Given e3, that is determined by the shape.
-      e2  e3 x e1.
-
-    Carrying the long edge's own sign by continuity instead does not survive
-    a gap: the shank can turn more than 90 degrees while unseen, and the edge
-    then comes back reversed.
-    """
-    n = triangle.shape[1]
-    frames = np.full((n, 3, 3), np.nan)
-    ok = np.isfinite(triangle).all(axis=(0, 2))
-    if ok.sum() < 3:
-        return frames
-    a, b, c = triangle[0], triangle[1], triangle[2]
-    # Edge i is opposite marker i.
-    edges = np.stack([c - b, a - c, b - a])                    # (3, n, 3)
-    lengths = np.linalg.norm(edges, axis=2)                    # (3, n)
-    lengths = np.where(np.isfinite(lengths), lengths, -1.0)
-    apex_i = np.argmax(lengths, axis=0)                        # marker off the long edge
-    rows = np.arange(n)
-    apex = triangle[apex_i, rows]
-    mid = (triangle.sum(axis=0) - apex) / 2.0
-    long_edge = edges[apex_i, rows]
-    with np.errstate(invalid="ignore", divide="ignore"):
-        long_edge = long_edge / np.linalg.norm(long_edge, axis=1, keepdims=True)
-        normal = np.cross(long_edge, apex - mid)
-        normal = normal / np.linalg.norm(normal, axis=1, keepdims=True)
-    long_edge[~ok] = np.nan
-    normal[~ok] = np.nan
-    e3 = _continuous(normal)
-    with np.errstate(invalid="ignore"):
-        e1 = long_edge * np.sign(np.sum(normal * e3, axis=1, keepdims=True))
-    e2 = np.cross(e3, e1)
-    frames[:, :, 0], frames[:, :, 1], frames[:, :, 2] = e1, e2, e3
-    return frames
+# The label-proof plate frame started here as analysis code and is now the
+# loader's own (optitrack_knee_axis.plate_frames).
+plate_frames = knee_axis.plate_frames
 
 
 def plate_rotation_deg(triangle: np.ndarray) -> np.ndarray:
@@ -215,26 +158,22 @@ def bar_rotation_deg(bar: np.ndarray) -> np.ndarray:
 
 
 def swing_axis(triangle: np.ndarray):
-    """(axis, share) of the plate's swing, from its rotation away from the
-    first tracked pose rather than from frame-to-frame increments.
+    """(axis, share) of the plate's swing: the loader's hinge axis since the
+    2026-11-18 fix, without the sign pin. `share` is the axis's share of the
+    plate's rotation from its first pose."""
+    axis, share, _frames, _idx, _second = knee_axis.swing_axis(triangle)
+    return axis, share
 
-    A relabelled frame is one impossible increment among thousands, but in a
-    sum of squared increments it outweighs the whole swing. Rotation from the
-    first pose, read off the label-proof plate_frames, has no such term.
-    `share` is the dominant eigenvalue's share, as hinge_axis's conditioning.
-    """
-    from scipy.spatial.transform import Rotation
-    frames = plate_frames(triangle)
-    ok = np.isfinite(frames).all(axis=(1, 2))
-    if ok.sum() < 8:
+
+def increment_axis(triangle: np.ndarray) -> np.ndarray:
+    """The hinge axis as the loader estimated it before the 2026-11-18 fix:
+    principal direction of summed squared frame-to-frame rotation increments
+    from a fixed marker order. Kept to show before against after."""
+    rv = knee_axis._rotation_increments(triangle)
+    if len(rv) < 8:
         raise knee_axis.GeometryError("Plate not tracked long enough.")
-    rel = np.einsum("nij,kj->nik", frames[ok], frames[ok][0])
-    rv = Rotation.from_matrix(rel).as_rotvec()
     w, V = np.linalg.eigh(rv.T @ rv)
-    total = float(w.sum())
-    if not np.isfinite(total) or total <= 0:
-        raise knee_axis.GeometryError("Plate shows no rotation.")
-    return V[:, -1], float(w[-1] / total)
+    return V[:, -1]
 
 
 # A frame-to-frame plate rotation above this is not limb motion: at 120 Hz it
@@ -243,9 +182,10 @@ IMPOSSIBLE_STEP_DEG = 10.0
 
 
 def hinge_diagnostics(triangle: np.ndarray, bar: np.ndarray) -> dict:
-    """How far the loader's hinge axis sits from the plate's swing axis, and
-    how much of the evidence it was estimated from is impossible steps."""
-    axis, conditioning, _pc2 = knee_axis.hinge_axis(triangle, bar)
+    """How far the pre-fix loader's hinge axis (increment_axis) sits from the
+    plate's swing axis, and how much of the evidence it was estimated from is
+    impossible steps."""
+    axis = increment_axis(triangle)
     ref, share = swing_axis(triangle)
     rv = knee_axis._rotation_increments(triangle)
     energy = np.sum(rv ** 2, axis=1)
@@ -415,7 +355,7 @@ def evaluate_trial(trial: dict) -> dict:
             row[f"{name}_status"] = "error"
             row[f"{name}_error"] = f"{type(exc).__name__}: {exc}"
     cur, leg = curves.get("current"), curves.get("legacy")
-    plate_curve = refit_curve = None
+    plate_curve = refit_curve = prefix_curve = None
     if cur is not None:
         row["coverage"] = cur["coverage"]
         row["current_conditioning"] = cur["conditioning"]
@@ -447,6 +387,12 @@ def evaluate_trial(trial: dict) -> dict:
         row.update(hinge_diagnostics(tri, bar))
         refit = current_with_axis(tri, bar, swing_axis(tri)[0])
         refit_curve = {"t": _t, "angle": refit}
+        prefix = current_with_axis(tri, bar, increment_axis(tri))
+        prefix_curve = {"t": _t, "angle": prefix}
+        if leg is not None and len(leg["t"]) == len(prefix):
+            fit = shape_fit(leg["angle"][win], prefix[win])
+            row["prefix_mirrored_vs_legacy"] = (fit["sign"] < 0)
+            row["gain_prefix_over_legacy"] = fit["gain"]
         row["refit_span"] = span_deg(refit[win]) if win is not None else span_deg(refit)
         if leg is not None and len(leg["t"]) == len(refit):
             fit = shape_fit(leg["angle"][win], refit[win])
@@ -455,7 +401,8 @@ def evaluate_trial(trial: dict) -> dict:
         row["plate_span"] = span_deg(plate[win]) if win is not None else span_deg(plate)
         row["thigh_span"] = span_deg(bar_rotation_deg(bar)[win]
                                      if win is not None else bar_rotation_deg(bar))
-        for name, c in (("legacy", leg), ("current", cur), ("refit", refit_curve)):
+        for name, c in (("legacy", leg), ("prefix", prefix_curve), ("current", cur),
+                        ("refit", refit_curve)):
             if c is not None and len(c["t"]) == len(plate):
                 fit = shape_fit(plate[win], np.abs(c["angle"][win]
                                                    - _first_finite(c["angle"])))
@@ -475,7 +422,8 @@ def evaluate_trial(trial: dict) -> dict:
         return row
     # The plate rotation is unsigned and grows with flexion, so its sense
     # against the IMU's is a convention, not information: mirror freely.
-    for name, c, arbitrary in (("legacy", leg, False), ("current", cur, True),
+    for name, c, arbitrary in (("legacy", leg, False), ("prefix", prefix_curve, True),
+                               ("current", cur, True),
                                ("refit", refit_curve, True),
                                ("plate", plate_curve, True)):
         if c is None:
@@ -542,17 +490,21 @@ def summarise(rows: list) -> dict:
         "trials_with_impossible_steps": sum(
             v > 0 for v in _vals(rows, "impossible_steps")),
         "swing_axis_share": _dist(_vals(rows, "swing_axis_share")),
+        "prefix_mirrored_vs_legacy": sum(
+            bool(r.get("prefix_mirrored_vs_legacy")) for r in both),
+        "gain_prefix_over_legacy": _dist(_vals(both, "gain_prefix_over_legacy")),
+        "gain_prefix_over_legacy_in_band": _in_band(_vals(both, "gain_prefix_over_legacy")),
         "gain_refit_over_legacy": _dist(_vals(rows, "gain_refit_over_legacy")),
         "gain_refit_over_legacy_in_band": _in_band(
             _vals(rows, "gain_refit_over_legacy")),
         "refit_legacy_resid_gain1": _dist(_vals(rows, "refit_legacy_resid_gain1")),
     }
-    for name in ("legacy", "current", "refit"):
+    for name in ("legacy", "prefix", "current", "refit"):
         g = _vals(rows, f"{name}_gain_vs_plate")
         out[f"{name}_gain_vs_plate"] = _dist(g)
         out[f"{name}_gain_vs_plate_in_band"] = _in_band(g)
         out[f"{name}_r_vs_plate"] = _dist(_vals(rows, f"{name}_r_vs_plate"))
-    for name in ("legacy", "current", "refit", "plate"):
+    for name in ("legacy", "prefix", "current", "refit", "plate"):
         out[f"{name}_imu_rmse"] = _dist(_vals(rows, f"{name}_imu_rmse_deg_offset_removed"))
         out[f"{name}_imu_best_polarity_rmse"] = _dist(
             _vals(rows, f"{name}_imu_best_polarity_rmse"))
@@ -586,7 +538,12 @@ def format_summary(s: dict) -> list:
         f"  RMS difference, sign+offset removed: {d(s['loaders_resid_gain1'], ' deg')}",
         f"  RMS difference, gain also fitted:    {d(s['loaders_resid_fitted'], ' deg')}",
         "",
-        "Current loader's hinge axis against the plate's swing axis",
+        "Pre-fix loader (increment axis) against legacy",
+        f"  mirrored relative to legacy: {s['prefix_mirrored_vs_legacy']} of {s['both_ok']}",
+        f"  amplitude gain prefix/legacy: {d(s['gain_prefix_over_legacy'])}",
+        f"    within {GAIN_BAND[0]}-{GAIN_BAND[1]}: {s['gain_prefix_over_legacy_in_band']} of {s['both_ok']}",
+        "",
+        "Pre-fix loader's hinge axis against the plate's swing axis",
         f"  angle between them: {d(s['hinge_axis_error_deg'], ' deg')}",
         f"    more than 30 deg apart: {s['hinge_axis_error_over_30']} trials",
         f"  trials with frame-to-frame steps over {IMPOSSIBLE_STEP_DEG:.0f} deg: "
@@ -603,7 +560,7 @@ def format_summary(s: dict) -> list:
         "Each loader against the shank plate's own rotation (optics only)",
         f"  thigh bar movement over the swing: {d(s['thigh_span'], ' deg')}",
     ]
-    for name in ("legacy", "current", "refit"):
+    for name in ("legacy", "prefix", "current", "refit"):
         g = s[f"{name}_gain_vs_plate"]
         lines += [
             f"  {name}: gain {d(g)}",
@@ -612,7 +569,7 @@ def format_summary(s: dict) -> list:
             f"    correlation {d(s[f'{name}_r_vs_plate'])}",
         ]
     lines += ["", "Each loader against the phone IMU (for the loader decision only)"]
-    for name in ("legacy", "current", "refit", "plate"):
+    for name in ("legacy", "prefix", "current", "refit", "plate"):
         g = s[f"{name}_imu_gain"]
         lines += [
             f"  {name}: offset-removed RMSE {d(s[f'{name}_imu_rmse'], ' deg')}",

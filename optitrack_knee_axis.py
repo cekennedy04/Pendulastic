@@ -36,6 +36,21 @@ MAX_HOLD_SPEED_MM_PER_FRAME = 0.5
 MAX_HOLD_COLLINEARITY_DEG = 25.0
 MAX_HOLD_SD_DEG = 2.0
 EXTENDED_ANGLE_DEG = 180.0
+# Quality flags (2026-11-18). Flags only: nothing is refused or excluded here.
+#
+# MIN_MARKER_COVERAGE: share of frames on which BOTH clusters are fully
+# tracked. On the 159 paired corpus trials the median is 0.72 and the tenth
+# percentile 0.60, so this marks roughly the worst tenth. It is a weak
+# detector: the takes whose curve was actually wrong sit in the middle of
+# that distribution, not at its bottom.
+MIN_MARKER_COVERAGE = 0.60
+# MIN_PLATE_AGREEMENT_R: correlation between the knee curve and the shank
+# plate's own rotation about the hinge axis. They differ by thigh movement
+# (median 14 deg on the corpus), which leaves the correlation at 1.00 on the
+# median take and 0.99 at the tenth percentile; a curve that disagrees with
+# the plate it was computed from has gone wrong somewhere. Below 0.95: 12 of
+# the 159, among them the one take where the refit was found wrong by hand.
+MIN_PLATE_AGREEMENT_R = 0.95
 
 
 class GeometryError(ValueError):
@@ -112,11 +127,15 @@ def segment_line_direction(bar: np.ndarray) -> np.ndarray:
 
 
 def _rotation_increments(triangle: np.ndarray) -> np.ndarray:
-    """Frame-to-frame rotation vectors of a triangle cluster, (m, 3) radians.
+    """Frame-to-frame rotation vectors of a triangle cluster, (m, 3) radians,
+    from a FIXED marker order.
 
-    For a hinge these all lie along the hinge, so their principal direction IS
-    the axis -- recovered without any pose assumption, which is the whole
-    point.
+    NOT used by hinge_axis any more (2026-11-18). A fixed marker order reads a
+    re-labelled frame of a near-isosceles plate as a turn of about 180 deg,
+    and in a sum of squared increments a handful of those outweigh the whole
+    swing: on the 159 paired corpus trials the axis this gave was more than
+    30 deg from the plate's swing axis on 130. Kept only so
+    optitrack_loader_compare can still show that defect.
     """
     tracked = np.isfinite(triangle).all(axis=(0, 2))
     idx = np.where(tracked)[0]
@@ -137,6 +156,68 @@ def _rotation_increments(triangle: np.ndarray) -> np.ndarray:
         nv = float(np.linalg.norm(v))
         out.append(v / nv * ang if (nv > 1e-12 and ang > 1e-9) else np.zeros(3))
     return np.asarray(out)
+
+
+def _continuous(v: np.ndarray) -> np.ndarray:
+    """Flip each row to stay in the previous finite row's hemisphere."""
+    out = v.copy()
+    prev = None
+    for i in range(len(out)):
+        if not np.isfinite(out[i]).all():
+            continue
+        if prev is not None and float(out[i] @ prev) < 0.0:
+            out[i] = -out[i]
+        prev = out[i]
+    return out
+
+
+def plate_frames(triangle: np.ndarray) -> np.ndarray:
+    """(n, 3, 3) orthonormal frame of a marker triangle, NaN where untracked.
+
+    Built only from quantities that do not depend on which marker Motive
+    called 1, 2 or 3, so a re-labelled frame cannot turn into a jump, and
+    nothing about the limb's pose is assumed:
+
+      e3  the plate normal. Its sign is not determined by the shape, so it is
+          carried by continuity in time. The normal is close to the swing
+          axis, which barely moves in a pendulum test, so continuity holds
+          across a tracking gap however far the shank swung meanwhile.
+      e1  along the longest edge (the best-conditioned direction on the
+          plate), pointing so that e1 x (midpoint of that edge -> the third
+          marker) is along e3. Given e3, that is determined by the shape.
+      e2  e3 x e1.
+
+    Carrying the long edge's own sign by continuity instead does not survive
+    a gap: the shank can turn more than 90 degrees while unseen, and the edge
+    then comes back reversed.
+    """
+    n = triangle.shape[1]
+    frames = np.full((n, 3, 3), np.nan)
+    ok = np.isfinite(triangle).all(axis=(0, 2))
+    if ok.sum() < 3:
+        return frames
+    a, b, c = triangle[0], triangle[1], triangle[2]
+    # Edge i is opposite marker i.
+    edges = np.stack([c - b, a - c, b - a])                    # (3, n, 3)
+    lengths = np.linalg.norm(edges, axis=2)                    # (3, n)
+    lengths = np.where(np.isfinite(lengths), lengths, -1.0)
+    apex_i = np.argmax(lengths, axis=0)                        # marker off the long edge
+    rows = np.arange(n)
+    apex = triangle[apex_i, rows]
+    mid = (triangle.sum(axis=0) - apex) / 2.0
+    long_edge = edges[apex_i, rows]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        long_edge = long_edge / np.linalg.norm(long_edge, axis=1, keepdims=True)
+        normal = np.cross(long_edge, apex - mid)
+        normal = normal / np.linalg.norm(normal, axis=1, keepdims=True)
+    long_edge[~ok] = np.nan
+    normal[~ok] = np.nan
+    e3 = _continuous(normal)
+    with np.errstate(invalid="ignore"):
+        e1 = long_edge * np.sign(np.sum(normal * e3, axis=1, keepdims=True))
+    e2 = np.cross(e3, e1)
+    frames[:, :, 0], frames[:, :, 1], frames[:, :, 2] = e1, e2, e3
+    return frames
 
 
 # How decisively the trial must agree about which way the knee opens before the
@@ -249,32 +330,69 @@ def _pin_axis_sign(axis: np.ndarray, rv: np.ndarray, triangle: np.ndarray,
     return axis if score > 0 else -axis
 
 
+def swing_axis(triangle: np.ndarray):
+    """(axis, share, frames, idx, second): the axis the plate swings about.
+
+    The principal direction of the plate's rotation AWAY FROM ITS FIRST
+    TRACKED POSE, read off plate_frames, which does not depend on marker
+    labels. Rotation from the first pose is large against marker noise for
+    the whole swing, where a single frame's increment is mostly noise once
+    the leg slows, and it has no term a re-labelled frame can dominate.
+
+    `share` is the dominant eigenvalue's share of that rotation. The sign of
+    `axis` is whatever `eigh` returned. `frames` are plate_frames at the
+    tracked frame indices `idx`. `second` is the next principal direction:
+    where the plate's off-axis rotation mostly lies.
+    """
+    from scipy.spatial.transform import Rotation
+    frames = plate_frames(triangle)
+    idx = np.where(np.isfinite(frames).all(axis=(1, 2)))[0]
+    if len(idx) < 9:
+        raise GeometryError(
+            f"Only {max(len(idx) - 1, 0)} usable rotation increments: the cluster "
+            f"is not tracked long enough to estimate a hinge axis.")
+    f = frames[idx]
+    from_first = Rotation.from_matrix(np.einsum("nij,kj->nik", f, f[0])).as_rotvec()
+    w, V = np.linalg.eigh(from_first.T @ from_first)
+    total = float(w.sum())
+    if not np.isfinite(total) or total <= 0:
+        raise GeometryError("Cluster shows no rotation; no hinge axis exists.")
+    return V[:, -1], float(w[-1] / total), f, idx, V[:, -2]
+
+
 def hinge_axis(triangle: np.ndarray, bar: np.ndarray = None):
     """(axis, conditioning, pc2_series) from the plate's own rotation.
+
+    The axis is swing_axis's. Until 2026-11-18 it was the principal direction
+    of frame-to-frame increments from a fixed marker order: see
+    _rotation_increments for what that did on the corpus.
 
     Pass `bar` to pin the axis's SIGN against the limb's own geometry (see
     _pin_axis_sign). Without it the sign is whatever `eigh` returned, which is
     arbitrary; the magnitude results are unaffected either way.
 
-    `conditioning` is the dominant eigenvalue's share of the total. 1.0 is a
-    perfect hinge; a tumbling plate tends toward 1/3. `pc2_series` is the
-    projection onto the SECOND axis, which the caller classifies as real
-    out-of-plane motion or as jitter.
+    `conditioning` is swing_axis's share: how much of the plate's rotation
+    from its first pose is about the axis. 1.0 is a perfect hinge; a tumbling
+    plate tends toward 1/3. THE SCALE CHANGED on 2026-11-18. It used to be the
+    axis's share of summed squared frame-to-frame increments, which measured
+    something else on real data: before the fix it was inflated by
+    re-labelled frames (they all turn about one in-plane axis), and with those
+    removed it is dominated by per-frame marker noise (median 0.49 on the 159
+    paired corpus trials, 147 of them under MIN_HINGE_CONDITIONING, for swings
+    that are plainly hinges). Rotation from the first pose is large against
+    that noise. On it, a 9 deg RMS out-of-plane wobble on a 60 deg swing
+    reads about 0.98, so MIN_HINGE_CONDITIONING = 0.90 now marks only gross
+    departures; it was never derived, and it still is not.
+
+    `pc2_series` is the plate's frame-to-frame rotation (label-proof)
+    projected onto the second principal direction, which the caller
+    classifies as real out-of-plane motion or as jitter.
     """
-    rv = _rotation_increments(triangle)
-    if len(rv) < 8:
-        raise GeometryError(
-            f"Only {len(rv)} usable rotation increments: the cluster is not "
-            f"tracked long enough to estimate a hinge axis.")
-    w, V = np.linalg.eigh(rv.T @ rv)
-    order = np.argsort(w)[::-1]
-    w, V = w[order], V[:, order]
-    total = float(w.sum())
-    if not np.isfinite(total) or total <= 0:
-        raise GeometryError("Cluster shows no rotation; no hinge axis exists.")
-    tracked = np.isfinite(triangle).all(axis=(0, 2))
-    axis = _pin_axis_sign(V[:, 0], rv, triangle, bar, np.where(tracked)[0])
-    return axis, float(w[0] / total), rv @ V[:, 1]
+    from scipy.spatial.transform import Rotation
+    first, share, f, idx, second = swing_axis(triangle)
+    rv = Rotation.from_matrix(np.einsum("nij,nkj->nik", f[1:], f[:-1])).as_rotvec()
+    axis = _pin_axis_sign(first, rv, triangle, bar, idx)
+    return axis, share, rv @ second
 
 
 def low_freq_ratio(pc2: np.ndarray, fps: float) -> float:
@@ -457,6 +575,8 @@ class KneeAngleResult:
     conditioning: float
     low_freq_ratio: float
     flags: tuple = field(default_factory=tuple)
+    coverage: float = float("nan")
+    plate_agreement_r: float = float("nan")
 
     def get_relative_angles(self) -> np.ndarray:
         """Baseline-subtracted. Always valid, calibrated or not.
@@ -544,6 +664,40 @@ def find_hold(triangle: np.ndarray, bar: np.ndarray, angles: np.ndarray):
     return slice(int(best[0]), int(best[-1]) + 1), ()
 
 
+def marker_coverage(triangle: np.ndarray, bar: np.ndarray) -> float:
+    """Share of frames on which both clusters are fully tracked."""
+    both = (np.isfinite(triangle).all(axis=(0, 2))
+            & np.isfinite(bar).all(axis=(0, 2)))
+    return float(both.mean()) if len(both) else 0.0
+
+
+def plate_rotation_about(triangle: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    """(n,) degrees the plate has turned about `axis` since its first tracked
+    pose, NaN where untracked. What a single sensor on the shank measures."""
+    from scipy.spatial.transform import Rotation
+    frames = plate_frames(triangle)
+    out = np.full(len(frames), np.nan)
+    idx = np.where(np.isfinite(frames).all(axis=(1, 2)))[0]
+    if len(idx) == 0:
+        return out
+    f = frames[idx]
+    rv = Rotation.from_matrix(np.einsum("nij,kj->nik", f, f[0])).as_rotvec()
+    out[idx] = np.degrees(rv @ axis)
+    return out
+
+
+def plate_agreement(triangle: np.ndarray, axis: np.ndarray,
+                    angles: np.ndarray) -> float:
+    """|correlation| between a knee curve and the shank plate's rotation about
+    the hinge. NaN when there is too little to correlate."""
+    plate = plate_rotation_about(triangle, axis)
+    ang = np.asarray(angles, dtype=float)
+    ok = np.isfinite(plate) & np.isfinite(ang)
+    if ok.sum() < 30 or np.std(plate[ok]) < 1e-9 or np.std(ang[ok]) < 1e-9:
+        return float("nan")
+    return abs(float(np.corrcoef(plate[ok], ang[ok])[0, 1]))
+
+
 def knee_angle_from_clusters(cluster_a: np.ndarray, cluster_b: np.ndarray,
                              fps: float) -> KneeAngleResult:
     """Knee angle from two marker clusters, in either role order.
@@ -595,7 +749,14 @@ def knee_angle_from_clusters(cluster_a: np.ndarray, cluster_b: np.ndarray,
     angles = signed_knee_angle(thigh_dirs, shank_dirs, axis)
 
     flags = flags + ("uncalibrated_offset",)
+    coverage = marker_coverage(triangle, bar)
+    if coverage < MIN_MARKER_COVERAGE:
+        flags = flags + ("low_marker_coverage",)
+    agreement = plate_agreement(triangle, axis, angles)
+    if np.isfinite(agreement) and agreement < MIN_PLATE_AGREEMENT_R:
+        flags = flags + ("knee_curve_disagrees_with_plate",)
     return KneeAngleResult(raw_angles=angles, is_calibrated=False,
                            offset_deg=None, conditioning=conditioning,
                            low_freq_ratio=low_freq_ratio(pc2, fps),
-                           flags=tuple(dict.fromkeys(flags)))
+                           flags=tuple(dict.fromkeys(flags)),
+                           coverage=coverage, plate_agreement_r=agreement)

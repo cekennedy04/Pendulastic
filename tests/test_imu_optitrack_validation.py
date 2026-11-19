@@ -408,3 +408,23 @@ def test_tracking_is_split_by_how_far_the_captured_flex_axis_is_off():
     assert got["under_15"]["n_trials"] == 2 and got["over_30"]["n_trials"] == 2
     assert got["under_15"]["gain_median"] > 0.95 > got["over_30"]["gain_median"]
     assert got["15_to_30"] is None
+
+
+# ── sensitivity to flagged takes ──────────────────────────────────────────────
+
+def test_sensitivity_drops_only_flagged_takes_and_counts_them():
+    def row(flags, zone):
+        return {"participant": "901", "group": "MS", "leg_key": "901_L", "optical_flags": flags,
+                "imu_interpretable": True, "shank_interpretable": True,
+                "refit_interpretable": True, "imu_pt": 0.2, "shank_pt": 0.2,
+                "refit_pt": 0.2, "imu_zone": zone, "shank_zone": "healthy",
+                "refit_zone": "healthy"}
+    rows = [row("", "healthy"), row("", "healthy"), row("low_marker_coverage", "impaired"),
+            row("knee_curve_disagrees_with_plate|low_marker_coverage", "impaired")]
+    got = v.sensitivity(rows)
+    assert got["flag_counts"] == {"low_marker_coverage": 2,
+                                  "knee_curve_disagrees_with_plate": 1}
+    assert got["any_flag"] == 2
+    assert got["without_any_flag"]["n_trials"] == 2
+    assert got["without_knee_curve_disagrees_with_plate"]["n_trials"] == 3
+    assert got["without_any_flag"]["pt"]["shank"]["verdict"]["zone_agree"] == 2

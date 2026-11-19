@@ -105,7 +105,10 @@ def test_hinge_axis_recovers_a_known_rotation_axis():
 
 def test_hinge_conditioning_falls_when_the_plate_tumbles():
     """Rotation spread across axes is not a hinge, and conditioning must say so."""
-    mk = _rotating_triangle(300, [0.0, 0.0, 1.0], 0.4, wobble_deg=12.0, wobble_hz=2.0)
+    # 30 deg of wobble on a 120 deg sweep. Conditioning is the axis's share of
+    # rotation from the first pose since 2026-11-18, so the wobble has to be a
+    # real share of the sweep to show (12 deg reads 0.98).
+    mk = _rotating_triangle(300, [0.0, 0.0, 1.0], 0.4, wobble_deg=30.0, wobble_hz=2.0)
     _axis, cond, _pc2 = ka.hinge_axis(mk)
     assert cond < 0.95, cond
 
@@ -350,7 +353,10 @@ def test_orchestrator_emits_and_flags_out_of_plane_motion_instead_of_refusing():
     for i in range(n):
         # a hinge sweep plus a SLOW out-of-plane wobble: low-frequency, so it
         # is real limb motion rather than marker jitter
-        R = _rot(perp, 9.0 * np.sin(2 * np.pi * 1.0 * i / 120.0)) @ _rot(hinge, 0.25 * i)
+        # 55 deg, not the 9 deg this used before 2026-11-18: conditioning is now
+        # the axis's share of rotation from the first pose, and on a 150 deg
+        # sweep only a gross wobble takes it under MIN_HINGE_CONDITIONING.
+        R = _rot(perp, 55.0 * np.sin(2 * np.pi * 1.0 * i / 120.0)) @ _rot(hinge, 0.25 * i)
         tri[:, i, :] = base @ R.T
     bar = np.repeat(np.array([[0.046, 0.0, 0.0], [-0.046, 0.0, 0.0],
                               [0.0, 0.0012, 0.0]])[:, None, :], n, axis=1)
@@ -532,3 +538,80 @@ def test_ill_conditioned_flag_does_not_claim_out_of_plane_underreporting():
                     n, axis=1)
     res = ka.knee_angle_from_clusters(tumbling, bar, fps=120.0)
     assert "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED" not in res.flags
+
+
+# ── the hinge axis and re-labelled frames (2026-11-18) ────────────────────────
+
+def _relabelled_noisy(mk, every=37, start=40, sd_m=0.0003):
+    """Swap markers 0 and 1 on scattered frames, as Motive does on a re-solve,
+    with marker noise at the level measured on the rig. Noise matters: three
+    markers are planar, so a noise-free swap is an EXACT half turn, which has
+    no extractable rotation vector and hides the defect."""
+    out = mk + np.random.default_rng(3).normal(0.0, sd_m, mk.shape)
+    frames = np.arange(start, mk.shape[1], every)
+    out[[0, 1], frames[:, None], :] = out[[1, 0], frames[:, None], :]
+    return out
+
+
+def test_hinge_axis_is_not_captured_by_relabelled_frames():
+    """On the 159 paired corpus trials the pre-fix axis sat more than 30 deg
+    from the plate's swing axis on 130: a re-labelled frame of a near-isosceles
+    plate reads as a half turn about an in-plane axis and outweighs the swing."""
+    mk = _relabelled_noisy(_rotating_triangle(600, [0.0, 0.0, 1.0], 0.25))
+    axis, _cond, _pc2 = ka.hinge_axis(mk)
+    assert abs(float(axis @ np.array([0.0, 0.0, 1.0]))) > 0.995, axis
+
+
+def test_knee_angle_keeps_its_amplitude_through_relabelled_frames():
+    n = 600
+    clean = _rotating_triangle(n, [0.0, 0.0, 1.0], 0.15)          # 90 deg sweep
+    bar = np.repeat(np.array([[0.046, 0.0, 0.0], [-0.046, 0.0, 0.0],
+                              [0.0, 0.0012, 0.0]])[:, None, :], n, axis=1)
+    res = ka.knee_angle_from_clusters(_relabelled_noisy(clean), bar, fps=120.0)
+    rel = res.get_relative_angles()
+    assert abs(abs(rel[-1]) - 0.15 * (n - 1)) < 3.0, rel[-1]
+
+
+def test_plate_frames_do_not_depend_on_marker_labels():
+    mk = _rotating_triangle(200, [0.0, 0.0, 1.0], 0.3)
+    swapped = mk.copy()
+    swapped[[0, 2], 50:120] = swapped[[2, 0], 50:120]
+    np.testing.assert_allclose(ka.plate_frames(mk), ka.plate_frames(swapped), atol=1e-9)
+
+
+# ── quality flags (2026-11-18) ────────────────────────────────────────────────
+
+def _swing_pair(n=600):
+    tri = _rotating_triangle(n, [0.0, 0.0, 1.0], 0.15)
+    bar = np.repeat(np.array([[0.046, 0.0, 0.0], [-0.046, 0.0, 0.0],
+                              [0.0, 0.0012, 0.0]])[:, None, :], n, axis=1)
+    return tri, bar
+
+
+def test_a_well_tracked_swing_carries_neither_quality_flag():
+    tri, bar = _swing_pair()
+    res = ka.knee_angle_from_clusters(tri, bar, fps=120.0)
+    assert res.coverage == pytest.approx(1.0)
+    assert res.plate_agreement_r > 0.999
+    assert "low_marker_coverage" not in res.flags
+    assert "knee_curve_disagrees_with_plate" not in res.flags
+
+
+def test_low_marker_coverage_is_flagged_not_refused():
+    tri, bar = _swing_pair()
+    tri[:, ::2, :] = np.nan                               # every other frame lost
+    res = ka.knee_angle_from_clusters(tri, bar, fps=120.0)
+    assert res.coverage == pytest.approx(0.5)
+    assert "low_marker_coverage" in res.flags
+    assert np.isfinite(res.get_relative_angles()).sum() > 250
+
+
+def test_plate_agreement_falls_when_the_curve_does_not_follow_the_plate():
+    tri, _bar = _swing_pair()
+    axis = np.array([0.0, 0.0, 1.0])
+    plate = ka.plate_rotation_about(tri, axis)
+    assert plate[-1] == pytest.approx(0.15 * 599, abs=0.5)
+    assert ka.plate_agreement(tri, axis, plate * 0.8 + 5.0) > 0.999
+    wrong = plate.copy()
+    wrong[300:] = wrong[300] - (wrong[300:] - wrong[300])   # folds back half way
+    assert ka.plate_agreement(tri, axis, wrong) < ka.MIN_PLATE_AGREEMENT_R
