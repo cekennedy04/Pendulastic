@@ -73,6 +73,7 @@ fn all_twenty_scalar_fields_are_present_as_keys() {
         // The golden run's footing (50 ms, no flex), which these fixtures pin.
         tick_s: mobile_imu_core::resample::TICK_S,
         flex_axis_capture: false,
+        flex_axis_fit: mobile_imu_core::replay::FlexAxisFit::Opening,
     };
     let r = replay(&raw_log(), &cfg).expect("release must be detected");
     let p = compute_pt_params(&r.t, &r.angle_deg, None, false).expect("trial must be scorable");
@@ -104,6 +105,7 @@ fn spasticity_type_serialises_to_one_of_its_three_variant_names() {
         // The golden run's footing (50 ms, no flex), which these fixtures pin.
         tick_s: mobile_imu_core::resample::TICK_S,
         flex_axis_capture: false,
+        flex_axis_fit: mobile_imu_core::replay::FlexAxisFit::Opening,
     };
     let r = replay(&raw_log(), &cfg).expect("release must be detected");
     let p = compute_pt_params(&r.t, &r.angle_deg, None, false).expect("trial must be scorable");

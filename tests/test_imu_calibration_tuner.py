@@ -1415,3 +1415,62 @@ def test_a_dropout_is_not_counted_as_rotation():
     t, _ = tuner.replay_trial(_gyro_segments(segs, gap_before=1, gap_s=0.3), _GATE_PARAMS)
     assert len(t) == 0
 
+
+
+# -- flex_axis_fit: the whole-recording axis of the reference footing --------
+
+def _axis_fit_log(late=None):
+    """Hold, an off-axis release transient (y), a swing about x that dies,
+    then optionally handling about y after `late` seconds of quiet."""
+    segs = [(250, _CALM), (15, (0.3, 2.5, 0.0))]
+    for k in range(6):
+        amp = 3.0 * (0.85 ** k) * (1 if k % 2 == 0 else -1)
+        segs.append((45, (amp, 0.0, 0.0)))
+    if late is not None:
+        segs += [(int(round(late * 100)), _CALM), (150, (0.0, 3.0, 0.0))]
+    segs.append((120, _CALM))
+    return _gyro_segments(segs)
+
+
+def _axis_off_x_deg(samples, **extra):
+    import imu_calibration_config
+    cap = {}
+    params = dict(imu_calibration_config.REFERENCE_REPLAY_CONFIG, **extra)
+    t, _ = tuner.replay_trial(samples, params, tick_s=tuner.ANALYSIS_TICK_S, capture=cap)
+    assert len(t) > 0
+    return float(np.degrees(np.arccos(min(1.0, abs(float(cap["flex_axis"][0]))))))
+
+
+def test_the_reference_footing_fits_the_axis_on_the_whole_swing():
+    import imu_calibration_config
+    assert imu_calibration_config.REFERENCE_REPLAY_CONFIG["flex_axis_fit"] == "recording"
+    log = _axis_fit_log()
+    assert _axis_off_x_deg(log, flex_axis_fit="opening") > 25.0     # mostly the transient
+    assert _axis_off_x_deg(log) < 12.0
+
+
+def test_a_config_without_the_key_replays_the_opening_fit():
+    params = {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True, "gravity_seed": True}
+    log = _axis_fit_log()
+    _, a_default = tuner.replay_trial(log, params)
+    _, a_opening = tuner.replay_trial(log, dict(params, flex_axis_fit="opening"))
+    assert np.array_equal(a_default, a_opening, equal_nan=True)
+
+
+def test_an_unknown_fit_is_refused():
+    import pytest
+    with pytest.raises(ValueError):
+        tuner.replay_trial(_axis_fit_log(), {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True,
+                                             "gravity_seed": True, "flex_axis_fit": "everything"})
+
+
+def test_handling_after_a_quiet_second_does_not_reach_the_axis():
+    clean = _axis_off_x_deg(_axis_fit_log())
+    assert abs(_axis_off_x_deg(_axis_fit_log(late=1.2)) - clean) < 1e-9
+
+
+def test_handling_before_the_quiet_second_is_up_does_reach_it():
+    """The limit of the rule, stated: motion that follows the swing by less
+    than QUIET_STOP_S is taken as part of it."""
+    clean = _axis_off_x_deg(_axis_fit_log())
+    assert _axis_off_x_deg(_axis_fit_log(late=0.5)) > clean + 20.0

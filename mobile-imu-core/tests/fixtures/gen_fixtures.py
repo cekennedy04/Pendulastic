@@ -691,11 +691,21 @@ def main():
     #                   has a yaw component, so the flex tier (rotation about
     #                   the learnt axis) and the across-gravity tier differ.
     #   REF_NOCOMMIT -- a small swing whose |omega| clears the 1 rad/s capture
-    #                   threshold on fewer than MIN_COMMIT_SAMPLES samples, so
-    #                   the axis never commits and the provisional one is used.
+    #                   threshold on fewer than MIN_COMMIT_SAMPLES samples. The
+    #                   whole-recording fit still uses every one of them; the
+    #                   opening fit would never commit.
+    #   REF_TRANSIENT -- an in-plane swing with an off-axis burst in the first
+    #                   0.2 s after release (the hand letting go). The opening
+    #                   fit (25 samples) is pulled by it; the whole-recording
+    #                   fit is not. Carried on both fits so each path is pinned.
+    #   REF_RUNON    -- a quickly damped in-plane swing, then the phone is
+    #                   handled: a burst about another axis that starts more
+    #                   than QUIET_STOP_S after the last sample at 1 rad/s. The
+    #                   whole-recording fit has closed by then and ignores it.
     from imu_calibration_tuner import ANALYSIS_TICK_S as _ATICK
     from imu_flex_axis import MIN_COMMIT_SAMPLES as _MIN_COMMIT
     ref_params = {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True,
+                  "flex_axis_fit": "recording",
                   "gravity_seed": True, "method": "relative"}
 
     def _rodrigues(v, k, ang):
@@ -704,7 +714,7 @@ def main():
         return (v * math.cos(ang) + np.cross(k, v) * math.sin(ang)
                 + k * float(np.dot(k, v)) * (1.0 - math.cos(ang)))
 
-    def _ref_log(axis, a0_deg, f_hz, tau, total_s, hold_s=2.0, fs=100.0):
+    def _ref_log(axis, a0_deg, f_hz, tau, total_s, hold_s=2.0, fs=100.0, burst=None, late=None):
         k = np.asarray(axis, dtype=float)
         k = k / np.linalg.norm(k)
         a, w = math.radians(a0_deg), 2.0 * math.pi * f_hz
@@ -724,6 +734,14 @@ def main():
                      + e2e_accel_bias + ripple_a)
             ripple_g = 0.002 * math.sin(2.0 * math.pi * 9.0 * t_i)
             gyro = rate * k + e2e_gyro_bias + ripple_g
+            if late is not None and late[0] <= t_i < late[0] + late[1]:
+                # (start s, length s, axis, peak rad/s): motion after the swing.
+                gyro = gyro + (late[3] * math.sin(math.pi * (t_i - late[0]) / late[1])
+                               * np.asarray(late[2], dtype=float))
+            if burst is not None and hold_s <= t_i < hold_s + 0.2:
+                # (axis, peak rad/s): a half-sine about another axis.
+                gyro = gyro + (burst[1] * math.sin(math.pi * (t_i - hold_s) / 0.2)
+                               * np.asarray(burst[0], dtype=float))
             ts_l.append(t_i)
             ts_ms_l.append(ts_ms)
             acc_l.append(accel)
@@ -741,11 +759,31 @@ def main():
         ("REF_YAW", [1.0, 0.0, math.tan(math.radians(30.0))], 45.0, 1.0, 1.2,
          "Swing about an axis tilted 30 deg toward the hold's vertical (a yaw component)."),
         ("REF_NOCOMMIT", [1.0, 0.0, 0.0], 14.0, 1.0, 0.5,
-         "Small swing whose axis never commits (provisional axis used)."),
+         "Small swing with fewer than MIN_COMMIT_SAMPLES qualifying samples."),
+        ("REF_TRANSIENT", [1.0, 0.0, 0.0], 45.0, 1.0, 1.2,
+         "In-plane swing with an off-axis release transient."),
+        ("REF_RUNON", [1.0, 0.0, 0.0], 45.0, 1.0, 0.5,
+         "Quickly damped swing, then the phone is handled after a quiet spell."),
     ]
+    opening_params = dict(ref_params, flex_axis_fit="opening")
     ref_angles = {}
     for tag, axis, a0d, fhz, tau, doc in ref_cases:
-        raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(axis, a0d, fhz, tau, total_s=6.0)
+        raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+            axis, a0d, fhz, tau, total_s=6.0,
+            burst=([0.0, 1.0, 0.0], 3.0) if tag == "REF_TRANSIENT" else None,
+            late=(4.6, 1.2, [0.0, 1.0, 0.0], 4.0) if tag == "REF_RUNON" else None)
+        if tag == "REF_RUNON":
+            from imu_flex_axis import QUIET_STOP_S as _QUIET
+            fast = [t for t, g in zip(ts_l, gyr_l) if np.linalg.norm(g) >= 1.0]
+            swing_fast = [t for t in fast if t < 4.6]
+            late_fast = [t for t in fast if t >= 4.6]
+            assert late_fast and min(late_fast) - max(swing_fast) > _QUIET, "REF_RUNON: no quiet spell"
+            # the handling must outweigh the swing, or ignoring it proves nothing
+            e_sw = sum(float(np.dot(g, g)) for t, g in zip(ts_l, gyr_l)
+                       if t < 4.6 and np.linalg.norm(g) >= 1.0)
+            e_lt = sum(float(np.dot(g, g)) for t, g in zip(ts_l, gyr_l)
+                       if t >= 4.6 and np.linalg.norm(g) >= 1.0)
+            assert e_lt > 2.0 * e_sw, f"REF_RUNON: late {e_lt:.0f} vs swing {e_sw:.0f}"
         n_fast = sum(1 for g in gyr_l if np.linalg.norm(g) >= 1.0)
         if tag == "REF_NOCOMMIT":
             assert 0 < n_fast < _MIN_COMMIT, f"{tag}: {n_fast} samples clear the threshold"
@@ -766,6 +804,13 @@ def main():
                                "replay_trial tick times at ANALYSIS_TICK_S."))
         parts.append(f64_slice(f"{tag}_ANG", ang_ref,
                                "replay_trial angle at the reference footing (index 0 NaN)."))
+        if tag in ("REF_YAW", "REF_TRANSIENT"):
+            _, ang_open = replay_trial(raw, opening_params, tick_s=_ATICK)
+            parts.append(f64_slice(f"{tag}_OPENING_ANG", ang_open,
+                                   "The same log with flex_axis_fit='opening' (25 samples, levelled)."))
+            if tag == "REF_TRANSIENT":
+                d_fit = float(np.nanmax(np.abs(np.asarray(ang_open) - np.asarray(ang_ref))))
+                assert d_fit > 1.0, f"REF_TRANSIENT: the two fits differ by only {d_fit:.3f} deg"
     # The yaw case must actually separate the tiers, or it tests nothing.
     raw_y, a_flex = ref_angles["REF_YAW"]
     _, a_grav = replay_trial(raw_y, dict(ref_params, flex_axis_capture=False), tick_s=_ATICK)

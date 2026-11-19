@@ -349,7 +349,9 @@ def test_the_phone_replays_on_the_reference_footing():
     assert tick and float(tick.group(1)) == tuner.ANALYSIS_TICK_S
     assert ref["gravity_seed"] is True   # the Rust AHRS always gravity-seeds
     footing = re.search(r'pub const SCORING_FOOTING: &str = "([^"]+)";', replay_rs)
-    assert footing and footing.group(1) == "ref-100hz-ema0.5-flex"
+    assert footing and footing.group(1) == "ref-100hz-ema0.5-flexrec"
+    assert ref["flex_axis_fit"] == "recording"
+    assert "flex_axis_fit: FlexAxisFit::Recording" in replay_rs
 
 
 def test_the_selectable_superset_matches_between_languages():

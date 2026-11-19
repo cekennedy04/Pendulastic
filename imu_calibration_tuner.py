@@ -368,6 +368,10 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
         {"t": float, "role": str, "sensor": str, "v": [x,y,z], "phone_ts_ms": int}
     params: {"beta": float, "ema_alpha": float,
              "flex_axis_capture": bool, "gravity_seed": bool}
+        optional "flex_axis_fit": "opening" (default: the live rule, 25
+        samples then levelled) or "recording" (the reference footing: the
+        whole swing, not levelled; see imu_flex_axis). With "recording" the
+        axis is known only at the end, so this is a replay-only setting.
 
     Returns (t_seconds: np.ndarray, angle_deg: np.ndarray) at the same 50 ms
     cadence the live app displays and saves. Returns two empty arrays if the
@@ -420,7 +424,17 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
 
     flex_axis: Optional[np.ndarray] = None
     flex_axis_armed = True
-    flex_est = FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD)
+    # "recording": fit the axis on every sample from the zero until the swing
+    # has died (or the log ends) and do not level it (the reference footing from
+    # ref-100hz-ema0.5-flexrec; see FlexAxisEstimator.whole_recording).
+    # "opening": the live rule, 25 samples then levelled -- the default, so a
+    # config that does not name a fit replays as it always did.
+    flex_fit = params.get("flex_axis_fit", "opening")
+    if flex_fit not in ("opening", "recording"):
+        raise ValueError(f"flex_axis_fit must be 'opening' or 'recording', got {flex_fit!r}")
+    flex_est = (FlexAxisEstimator.whole_recording(_FLEX_CAPTURE_THRESHOLD)
+                if flex_fit == "recording"
+                else FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD))
     q_zero: dict = {}
     g_zero: dict = {}
     zero_captured = False
@@ -610,6 +624,13 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
             # place. Entry still requires pending_departure, so the guard
             # against capturing during handling is unchanged, as is when
             # q_zero is taken (zero_captured latches independently).
+            # Whole-recording fit: time spent under the capture rate counts
+            # towards closing the fit (FlexAxisEstimator.quiet), so what is
+            # done to the leg or the phone after the swing has died cannot
+            # reach the axis. A no-op for the opening fit and before the
+            # first fed sample.
+            if (is_distal or is_solo) and omega_mag < _FLEX_CAPTURE_THRESHOLD:
+                flex_est.quiet(dt)
             if flex_axis_armed and (is_distal or is_solo) and \
                     (st.pending_departure or flex_est.n_samples):
                 if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
@@ -710,6 +731,10 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
 
     if not zero_captured:
         return np.array([]), np.array([])
+
+    if params["flex_axis_capture"] and flex_fit == "recording":
+        flex_est.finalize()
+        flex_axis = flex_est.axis
 
     def _swing_from_quats(quats: dict) -> float:
         if (ROLE_PROXIMAL in quats and ROLE_DISTAL in quats

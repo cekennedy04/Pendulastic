@@ -162,6 +162,7 @@ fn real_pipeline_peak_and_trough_indices_land_on_the_scored_tick() {
         // The golden run's footing (50 ms, no flex), which the fixture pins.
         tick_s: mobile_imu_core::resample::TICK_S,
         flex_axis_capture: false,
+        flex_axis_fit: mobile_imu_core::replay::FlexAxisFit::Opening,
     };
     let r = replay(&raw_log(), &cfg).expect("release must be detected");
     let p = compute_pt_params(&r.t, &r.angle_deg, None, false).expect("trial must be scorable");

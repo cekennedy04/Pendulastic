@@ -339,7 +339,7 @@ test('the wasm names the formula and footing it scores with, for the stored reco
   await createSession({ beta: 0.041, emaAlpha: 0.5, wasmSource });
   assert.deepEqual(scoringProvenance(), {
     scoreFormulaId: 'pt5trough-ref-2026-11-16',
-    scoringFooting: 'ref-100hz-ema0.5-flex',
+    scoringFooting: 'ref-100hz-ema0.5-flexrec',
   });
   // A wasm that predates the exports reads as not reported, never guessed.
   assert.deepEqual(scoringProvenance({}), { scoreFormulaId: null, scoringFooting: null });

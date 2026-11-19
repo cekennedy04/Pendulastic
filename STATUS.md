@@ -336,6 +336,23 @@ scores move. "Not verified" is stated, never implied.
   is stale. Records made after the live app is redeployed carry `ALGORITHM_VERSION`
   `0.2.0+...`. Independent review of the split: `docs/seed-fix-split-review`.
 
+- **Flexion axis fitted on the whole swing (owner approved 2026-11-19; branch
+  `fix/flex-axis-whole-recording`, PR open, not merged; core 0.5.0, footing
+  `ref-100hz-ema0.5-flexrec`):** the scored replay, in Rust and in the Python reference, now
+  fits the flexion axis on every sample from the zero until the swing has died and does not
+  level it. Before, it used the first 25 samples (the release itself) levelled against an
+  accelerometer sample taken with the shank already falling. Against shank-plate rotation on
+  the 145 tracked paired trials: axis error median 21.1 to 10.9 deg, gain 0.85 to 0.93, RMSE
+  median 8.7 to 4.8 deg (p90 22.3 to 9.9). It moves every app angle: A0 by a median +2.1 deg,
+  13 of 144 PT scores by more than 0.1, 8 of 132 verdicts; one trial that scored no longer
+  does. The fit closes after one second under 1 rad/s, added after testing what a recording
+  that runs on does to the axis; that stop is an addition to the option the owner approved.
+  The live trace, the desktop server and every tool that replays with the local
+  `imu_calibration_config.json` or a hard-coded config still use the old rule.
+  `lateral_motion` still measures against the old axis. Trends break at the footing change.
+- **Consequence:** phone-derived corpus numbers computed before this merges (including
+  `docs/reports/2026-11-18-imu-vs-optitrack-validation.md`) are on the old footing.
+
 ### 5. OptiTrack / RMSE validation — IN REVIEW (validation report)
 - **Canonical branch:** `main` (#81, #88 merged). Open: `claude/optitrack-vs-imu-0130a7`
   (IMU against OptiTrack on the human recordings; analysis code and report only, no loader or
@@ -347,8 +364,7 @@ scores move. "Not verified" is stated, never implied.
 - **Reference (owner, 2026-11-18):** shank-plate rotation for tracking, refit knee angle for the
   knee. The refit lives in `optitrack_loader_compare.py` / `imu_optitrack_validation.py` as
   analysis code.
-- **Proposed, not started:** loader fix PR for `optitrack_knee_axis.hinge_axis`; app
-  flexion-axis capture; why A0, R2n and area ratio differ between curves that agree; whether
+- **Proposed, not started:** loader fix PR for `optitrack_knee_axis.hinge_axis`; why A0, R2n and area ratio differ between curves that agree; whether
   low-coverage takes are excluded (owner).
 - **Entry points:** `batch_imu_vs_optitrack_rmse.py`, `rmse_pipeline_common.py`.
 - **Gaps:** the RMSE gate compares only the active swing window, so it could not see the seed bug;

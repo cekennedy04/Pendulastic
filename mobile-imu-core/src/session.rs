@@ -256,6 +256,14 @@ impl TrialSession {
     /// cannot run live, and the project settled on the online estimator for
     /// the angle -- reporting quality against a different axis than the one
     /// the angle used would describe a trial that was never scored.
+    ///
+    /// KNOWN GAP (crate 0.5.0): the scored angle now uses the whole-recording
+    /// axis (`FlexAxisFit::Recording`), while this still measures against the
+    /// 25-sample levelled one, fed from the first sample of the log rather
+    /// than from the zero. So the sentence above no longer holds. Left as it
+    /// was so that the axis change moves the angle and nothing else; moving
+    /// this to the scored axis changes every stored lateral figure and is a
+    /// separate change.
     pub fn lateral_motion(&self) -> Option<LateralMotion> {
         // Gravity is passed, not omitted. Both Python call sites
         // (pendulastic_imu_server and imu_calibration_tuner) hand the

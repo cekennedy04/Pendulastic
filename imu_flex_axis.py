@@ -42,6 +42,16 @@ qualifying samples. Both call sites drive it through the same `update()`, so
 replay and live cannot diverge -- which is the property that matters, since
 imu_calibration_tuner exists precisely to reproduce the server's arithmetic.
 
+Scored replay (2026-11-19)
+--------------------------
+A replay is not live: it has the whole recording. On the reference footing
+(imu_calibration_config.REFERENCE_REPLAY_CONFIG, "flex_axis_fit": "recording")
+replay_trial uses FlexAxisEstimator.whole_recording(), which accumulates the
+same second moment over the whole swing, closes after QUIET_STOP_S of quiet,
+and does not level the result. The live server, and any replay whose config
+does not name a fit, keep the 25-sample levelled rule described above, so live
+and replay now differ on purpose on that footing.
+
 The vectors are NOT mean-centred: a rotation axis is a direction that the
 gyro vector lies along (in both signs across an oscillation), so the raw
 second moment is the correct quantity, not the covariance about the mean.
@@ -83,6 +93,19 @@ MIN_COMMIT_SAMPLES = 25
 # axis is kept.
 MAX_GRAVITY_TILT_COS = 0.5      # 0.5 => 30 deg off horizontal
 
+# Whole-recording fit only: once the gyro has stayed under the threshold for
+# this long after the first qualifying sample, the fit is closed and later
+# samples are ignored. A swing passes under 1 rad/s only briefly at each
+# reversal (a half period is about 0.5 s), so one second of quiet means the
+# swing is over, and whatever moves the phone after that is not the swing: the
+# leg being lifted back, the phone being unstrapped. Tested 2026-11-19 by
+# appending such motion to 46 corpus recordings: without the stop, 2.5 s of
+# tumbling moved the axis by more than 10 deg on 28 of them; with it, on 1
+# (and that one also differs by 12.7 deg with nothing appended, because it has
+# real motion after a quiet second). It does nothing for a leg caught while it
+# is still swinging -- no axis rule does, and the score is wrong on every rule.
+QUIET_STOP_S = 1.0
+
 
 class FlexAxisEstimator:
     """Online principal-axis estimator. Feed it raw gyro vectors via update();
@@ -90,12 +113,20 @@ class FlexAxisEstimator:
     above-threshold sample) and `committed` for whether it has settled."""
 
     __slots__ = ("_threshold", "_min_samples", "_m", "_n", "_axis",
-                 "_committed", "_first", "_gravity", "_leveled")
+                 "_committed", "_first", "_gravity", "_leveled", "_level",
+                 "_quiet_stop", "_quiet", "_closed")
 
     def __init__(self, threshold: float = DEFAULT_THRESHOLD,
-                 min_samples: int = MIN_COMMIT_SAMPLES):
+                 min_samples: Optional[int] = MIN_COMMIT_SAMPLES,
+                 level: bool = True):
         self._threshold = float(threshold)
-        self._min_samples = int(min_samples)
+        # None: never commit on a count. The caller feeds every sample it has
+        # and calls finalize() (see whole_recording()).
+        self._min_samples = None if min_samples is None else int(min_samples)
+        self._level = bool(level)
+        self._quiet_stop: Optional[float] = None
+        self._quiet = 0.0
+        self._closed = False
         self._m = np.zeros((3, 3), dtype=float)
         self._n = 0
         self._axis: Optional[np.ndarray] = None
@@ -103,6 +134,50 @@ class FlexAxisEstimator:
         self._first: Optional[np.ndarray] = None
         self._gravity: Optional[np.ndarray] = None
         self._leveled = False
+
+    @classmethod
+    def whole_recording(cls, threshold: float = DEFAULT_THRESHOLD) -> "FlexAxisEstimator":
+        """The estimator a SCORED REPLAY uses: fed every gyro sample from the
+        zero until the swing has died (QUIET_STOP_S of quiet, reported by the
+        caller through quiet()) or the recording ends, committed once by
+        finalize(), and not levelled.
+
+        Why this differs from the live rule (measured on the paired corpus,
+        2026-11-19, against the axis the phone actually turned about): 25
+        samples is the release itself, and the axis fitted on it is a median
+        18.5 deg out; fitted on the whole recording it is 10.0. Levelling made
+        it worse, not better (21.1 with it): the accelerometer sample it levels
+        against is taken with the shank already falling (a median 8.4 deg from
+        the hold gravity, reading 0.76 g), and the swing axis is not horizontal
+        to begin with (a median 8.4 deg out). A replay has the whole recording,
+        so it has no reason to stop at the first quarter second. The live
+        trace cannot look ahead and keeps the 25-sample rule.
+        """
+        est = cls(threshold, min_samples=None, level=False)
+        est._quiet_stop = QUIET_STOP_S
+        return est
+
+    @property
+    def closed(self) -> bool:
+        """True once a whole-recording fit has stopped taking samples."""
+        return self._closed
+
+    def quiet(self, dt) -> None:
+        """Report `dt` seconds spent under the threshold. Only a
+        whole-recording fit that has already taken a sample counts it; the fit
+        closes when the quiet since the last qualifying sample reaches
+        QUIET_STOP_S."""
+        if self._quiet_stop is None or self._n == 0 or self._closed:
+            return
+        try:
+            dt = float(dt)
+        except (TypeError, ValueError):
+            return
+        if not (np.isfinite(dt) and dt > 0.0):
+            return
+        self._quiet += dt
+        if self._quiet >= self._quiet_stop:
+            self._closed = True
 
     @property
     def axis(self) -> Optional[np.ndarray]:
@@ -127,7 +202,7 @@ class FlexAxisEstimator:
         Ignores sub-threshold samples and does nothing once committed, so
         callers can drive it unconditionally. Gravity is optional: without it
         the axis is simply not levelled."""
-        if self._committed:
+        if self._committed or self._closed:
             return
         v = np.asarray(v, dtype=float)
         if v.shape != (3,) or not np.all(np.isfinite(v)):
@@ -156,7 +231,15 @@ class FlexAxisEstimator:
 
         self._m += np.outer(v, v)
         self._n += 1
-        if self._n >= self._min_samples:
+        self._quiet = 0.0
+        if self._min_samples is not None and self._n >= self._min_samples:
+            self._commit()
+
+    def finalize(self) -> None:
+        """Commit on whatever has been accumulated. A no-op if already
+        committed or nothing qualified (the axis then stays None). With a
+        single qualifying sample the result is that sample's direction."""
+        if not self._committed and self._n > 0:
             self._commit()
 
     def _commit(self) -> None:
@@ -175,7 +258,7 @@ class FlexAxisEstimator:
         # Level it: drop the component along gravity, so the axis lies in the
         # horizontal plane the knee actually flexes about. Skipped when the
         # axis is too far from horizontal to trust the assumption.
-        if self._gravity is not None:
+        if self._level and self._gravity is not None:
             along = float(np.dot(axis, self._gravity))
             if abs(along) <= MAX_GRAVITY_TILT_COS:
                 leveled = axis - along * self._gravity
@@ -200,6 +283,8 @@ class FlexAxisEstimator:
         self._first = None
         self._gravity = None
         self._leveled = False
+        self._quiet = 0.0
+        self._closed = False
 
 
 def principal_axis(vectors, threshold: float = DEFAULT_THRESHOLD) -> Optional[np.ndarray]:

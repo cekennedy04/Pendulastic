@@ -16,7 +16,7 @@ use crate::ahrs::{gravity_seed, qconj, qmul, MadgwickAhrs, Quat, Vec3};
 use crate::calibration::{
     calibrate_accel_bias, calibrate_gyro_bias, gravity_dir_from_hold, ReleaseDetector,
 };
-use crate::flex_axis::FlexAxisEstimator;
+use crate::flex_axis::{FlexAxisEstimator, DEFAULT_THRESHOLD};
 use crate::goniometry::{ockendon_deg, OCKENDON_FT_RATIO};
 use crate::resample::{ema_smooth, rescale_ema_alpha, tick_resample, ANALYSIS_TICK_S, TICK_S};
 use crate::stillness::{is_stationary_window, SampleBuf, GYRO_BIAS_WINDOW_S};
@@ -66,12 +66,32 @@ pub struct ReplayConfig {
     /// (`replay_trial`'s `flex_axis_capture`). Off, the swing is the rotation
     /// across gravity, as the app scored before 0.4.0.
     pub flex_axis_capture: bool,
+    /// What the flexion axis is fitted on. Ignored when `flex_axis_capture`
+    /// is off.
+    pub flex_axis_fit: FlexAxisFit,
+}
+
+/// What a replay fits the flexion axis on (`replay_trial`'s `flex_axis_fit`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FlexAxisFit {
+    /// The live rule: the first 25 samples at or above 1 rad/s after the zero,
+    /// levelled against the accelerometer. The reference footing up to crate
+    /// 0.4.x (`ref-100hz-ema0.5-flex`).
+    Opening,
+    /// Every sample at or above 1 rad/s from the zero until the swing has
+    /// died (a second under that rate) or the recording ends, not levelled (`FlexAxisEstimator::whole_recording`). The
+    /// reference footing from crate 0.5.0.
+    Recording,
 }
 
 /// Name of the footing [`ReplayConfig::reference`] builds, stored on every
 /// trial record from crate 0.4.0 (`scoring_footing`). Pinned against the
 /// config's own fields by `tests/replay_test.rs`.
-pub const SCORING_FOOTING: &str = "ref-100hz-ema0.5-flex";
+///
+/// `-flexrec` (crate 0.5.0) replaced `-flex`: the flexion axis is fitted on
+/// the whole recording and not levelled, which moves every angle, so trends
+/// must not be drawn across the two.
+pub const SCORING_FOOTING: &str = "ref-100hz-ema0.5-flexrec";
 
 impl ReplayConfig {
     /// The reference footing: the configuration `imu_calibration_tuner`
@@ -90,6 +110,7 @@ impl ReplayConfig {
             release_override: None,
             tick_s: ANALYSIS_TICK_S,
             flex_axis_capture: true,
+            flex_axis_fit: FlexAxisFit::Recording,
         }
     }
 
@@ -267,7 +288,10 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
     // The hold pose as of the start of the departure in progress, kept for a
     // release that stalls and resumes (see `calibration::STALL_MAX_S`).
     let mut departure_zero: Option<(Quat, usize, Option<Vec3>)> = None;
-    let mut flex = FlexAxisEstimator::default();
+    let mut flex = match cfg.flex_axis_fit {
+        FlexAxisFit::Opening => FlexAxisEstimator::default(),
+        FlexAxisFit::Recording => FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD),
+    };
 
     let mut sample_t: Vec<f64> = Vec::with_capacity(samples.len());
     let mut sample_q: Vec<Quat> = Vec::with_capacity(samples.len());
@@ -335,13 +359,23 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
                 // The flexion axis is learnt from the zero-capture sample
                 // onward, as `replay_trial` feeds it: raw gyro, with the
                 // bias-corrected accel as gravity, before this sample is
-                // integrated. The estimator ignores sub-threshold samples and
-                // stops once committed, so it is fed unconditionally after
-                // the zero. Under a release override the feed starts at the
+                // integrated. The estimator ignores sub-threshold samples, and
+                // under `FlexAxisFit::Opening` stops once committed, so it is
+                // fed unconditionally after the zero; under
+                // `FlexAxisFit::Recording` it takes every sample to the end. Under a release override the feed starts at the
                 // override's sample, because the axis belongs to the swing the
                 // zero pose starts; the reference has no override to compare.
+                //
+                // Time under the capture rate counts towards closing a
+                // whole-recording fit (`FlexAxisEstimator::quiet`), so motion
+                // after the swing has died cannot reach the axis.
                 if cfg.flex_axis_capture && zero.is_some() {
-                    flex.update(s.v, accel);
+                    let rate = (s.v[0] * s.v[0] + s.v[1] * s.v[1] + s.v[2] * s.v[2]).sqrt();
+                    if rate < DEFAULT_THRESHOLD {
+                        flex.quiet(dt);
+                    } else {
+                        flex.update(s.v, accel);
+                    }
                 }
 
                 if zero.is_none() {
@@ -377,6 +411,9 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
     // The final estimate projects every sample, pre-release ones included, as
     // `replay_trial` projects every tick with the axis it ends on. If the
     // swing never commits an axis the provisional one is used, as there.
+    if cfg.flex_axis_fit == FlexAxisFit::Recording {
+        flex.finalize();
+    }
     let flex_axis = if cfg.flex_axis_capture { flex.axis() } else { None };
 
     let angle_raw: Vec<f64> = sample_q

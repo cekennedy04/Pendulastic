@@ -320,3 +320,87 @@ def test_a_swing_entirely_off_the_axis_reads_as_fully_lateral():
     w[:, 1] = 3.0 * np.sin(2 * np.pi * np.linspace(0, 4, 400))
     r = lateral_motion(w, [1.0, 0.0, 0.0])
     assert r["lateral_fraction"] == pytest.approx(1.0, rel=1e-9)
+
+
+# -- Whole-recording fit (the scored replay's rule, 2026-11-19) --------------
+
+from imu_flex_axis import QUIET_STOP_S   # noqa: E402
+
+
+def test_whole_recording_commits_only_on_finalize_and_is_not_levelled():
+    est = FlexAxisEstimator.whole_recording()
+    tilt = math.radians(20.0)             # inside the levelling guard
+    v = 2.0 * np.array([math.cos(tilt), 0.0, math.sin(tilt)])
+    for _ in range(200):
+        est.update(v, gravity=[0.0, 0.0, 1.0])
+    assert not est.committed and est.n_samples == 200
+    est.finalize()
+    assert est.committed and not est.leveled
+    assert _angle_between(est.axis, v) < 1e-6
+    before = est.axis.copy()
+    est.finalize()
+    assert np.array_equal(est.axis, before)
+
+
+def test_whole_recording_outweighs_the_release_transient_the_opening_fit_keeps():
+    true_axis = _unit([0.0, 1.0, 0.0])
+    transient = np.tile(_unit([1.0, 0.2, 0.0]) * 3.0, (20, 1))
+    swing = np.concatenate([_swing_burst(true_axis, n=80), -_swing_burst(true_axis, n=80, peak=4.0)])
+    opening, whole = FlexAxisEstimator(), FlexAxisEstimator.whole_recording()
+    for v in np.concatenate([transient, swing]):
+        opening.update(v)
+        whole.update(v)
+    whole.finalize()
+    assert _angle_between(opening.axis, true_axis) > 30.0
+    assert _angle_between(whole.axis, true_axis) < 12.0
+
+
+def test_finalize_without_a_qualifying_sample_leaves_no_axis():
+    est = FlexAxisEstimator.whole_recording()
+    est.update([0.1, 0.0, 0.0])
+    est.finalize()
+    assert est.axis is None and not est.committed
+
+
+def test_a_single_qualifying_sample_gives_its_own_direction():
+    est = FlexAxisEstimator.whole_recording()
+    est.update([0.0, 0.0, -3.0])
+    est.finalize()
+    assert _angle_between(est.axis, [0.0, 0.0, 1.0]) < 1e-9
+    assert est.axis[2] < 0.0              # sign pinned to the sample
+
+
+def test_a_second_of_quiet_closes_the_fit_and_less_does_not():
+    est = FlexAxisEstimator.whole_recording()
+    est.quiet(5.0)                        # before any sample: not counted
+    est.update([2.0, 0.0, 0.0])
+    for _ in range(99):
+        est.quiet(0.01)
+    assert not est.closed
+    est.update([2.0, 0.0, 0.0])           # a qualifying sample resets the quiet
+    for _ in range(99):
+        est.quiet(0.01)
+    for bad in (float("nan"), -1.0, None, 0.0):
+        est.quiet(bad)
+    assert not est.closed
+    est.quiet(0.01)
+    assert est.closed and QUIET_STOP_S == 1.0
+    est.update([0.0, 9.0, 0.0])           # the phone being taken off
+    assert est.n_samples == 2
+    est.finalize()
+    assert _angle_between(est.axis, [1.0, 0.0, 0.0]) < 1e-9
+
+
+def test_the_opening_fit_ignores_quiet_and_reset_reopens_a_closed_fit():
+    opening = FlexAxisEstimator()
+    opening.update([2.0, 0.0, 0.0])
+    opening.quiet(10.0)
+    assert not opening.closed
+    whole = FlexAxisEstimator.whole_recording()
+    whole.update([2.0, 0.0, 0.0])
+    whole.quiet(2.0)
+    assert whole.closed
+    whole.reset()
+    assert not whole.closed and whole.n_samples == 0
+    whole.update([0.0, 2.0, 0.0])
+    assert whole.n_samples == 1

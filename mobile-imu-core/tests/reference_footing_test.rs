@@ -1,4 +1,5 @@
-//! The reference footing (crate 0.4.0): the phone replays a trial the way
+//! The reference footing (crate 0.4.0; flexion axis fitted on the whole
+//! recording from 0.5.0): the phone replays a trial the way
 //! `imu_calibration_tuner.replay_trial` does for the corpus -- 10 ms ticks,
 //! EMA 0.5 per 50 ms rescaled to the tick, swing projected onto a flexion
 //! axis learnt from the swing. Golden series come from `replay_trial` itself
@@ -8,7 +9,9 @@
 mod golden;
 
 use mobile_imu_core::ahrs::Vec3;
-use mobile_imu_core::replay::{replay, Method, RawSample, ReplayConfig, Sensor, SCORING_FOOTING};
+use mobile_imu_core::replay::{
+    replay, FlexAxisFit, Method, RawSample, ReplayConfig, Sensor, SCORING_FOOTING,
+};
 use mobile_imu_core::resample::{rescale_ema_alpha, ANALYSIS_TICK_S, TICK_S};
 use mobile_imu_core::stillness::ZERO_CAPTURE_GUARD_RAD_S;
 
@@ -62,8 +65,59 @@ fn a_swing_with_a_yaw_component_matches_the_reference_replay() {
           golden::REF_YAW_T, golden::REF_YAW_ANG);
 }
 
+fn opening() -> ReplayConfig {
+    ReplayConfig { flex_axis_fit: FlexAxisFit::Opening, ..ReplayConfig::reference() }
+}
+
 #[test]
-fn a_swing_whose_axis_never_commits_matches_the_reference_replay() {
+fn a_release_transient_matches_the_reference_replay_on_both_fits() {
+    check("REF_TRANSIENT", golden::REF_TRANSIENT_RAW_T, golden::REF_TRANSIENT_RAW_TS_MS,
+          golden::REF_TRANSIENT_RAW_ACCEL, golden::REF_TRANSIENT_RAW_GYRO,
+          golden::REF_TRANSIENT_T, golden::REF_TRANSIENT_ANG);
+    let l = log(golden::REF_TRANSIENT_RAW_T, golden::REF_TRANSIENT_RAW_TS_MS,
+                golden::REF_TRANSIENT_RAW_ACCEL, golden::REF_TRANSIENT_RAW_GYRO);
+    let old = replay(&l, &opening()).unwrap();
+    assert_series("REF_TRANSIENT opening", &old.angle_deg, golden::REF_TRANSIENT_OPENING_ANG);
+}
+
+#[test]
+fn the_opening_fit_still_matches_the_reference_replay() {
+    let l = log(golden::REF_YAW_RAW_T, golden::REF_YAW_RAW_TS_MS,
+                golden::REF_YAW_RAW_ACCEL, golden::REF_YAW_RAW_GYRO);
+    let old = replay(&l, &opening()).unwrap();
+    assert_series("REF_YAW opening", &old.angle_deg, golden::REF_YAW_OPENING_ANG);
+}
+
+#[test]
+fn the_whole_recording_fit_is_not_pulled_by_a_release_transient() {
+    // The swing is about sensor x; the first 0.2 s carries a burst about y.
+    let l = log(golden::REF_TRANSIENT_RAW_T, golden::REF_TRANSIENT_RAW_TS_MS,
+                golden::REF_TRANSIENT_RAW_ACCEL, golden::REF_TRANSIENT_RAW_GYRO);
+    let off = |r: &mobile_imu_core::replay::TrialResult| {
+        r.flex_axis.unwrap()[0].abs().min(1.0).acos().to_degrees()
+    };
+    let rec = replay(&l, &ReplayConfig::reference()).unwrap();
+    let old = replay(&l, &opening()).unwrap();
+    assert!(off(&rec) < 12.0, "whole-recording axis is {} deg off", off(&rec));
+    assert!(off(&old) > 2.0 * off(&rec), "opening {} vs recording {}", off(&old), off(&rec));
+}
+
+#[test]
+fn handling_after_a_quiet_spell_does_not_reach_the_axis() {
+    // The late burst carries more than twice the swing's gyro energy (the
+    // fixture generator asserts it), about sensor y; the swing is about x.
+    check("REF_RUNON", golden::REF_RUNON_RAW_T, golden::REF_RUNON_RAW_TS_MS,
+          golden::REF_RUNON_RAW_ACCEL, golden::REF_RUNON_RAW_GYRO,
+          golden::REF_RUNON_T, golden::REF_RUNON_ANG);
+    let l = log(golden::REF_RUNON_RAW_T, golden::REF_RUNON_RAW_TS_MS,
+                golden::REF_RUNON_RAW_ACCEL, golden::REF_RUNON_RAW_GYRO);
+    let r = replay(&l, &ReplayConfig::reference()).unwrap();
+    let ax = r.flex_axis.unwrap();
+    assert!(ax[0].abs() > 0.999, "axis followed the handling: {ax:?}");
+}
+
+#[test]
+fn a_swing_with_few_qualifying_samples_matches_the_reference_replay() {
     check("REF_NOCOMMIT", golden::REF_NOCOMMIT_RAW_T, golden::REF_NOCOMMIT_RAW_TS_MS,
           golden::REF_NOCOMMIT_RAW_ACCEL, golden::REF_NOCOMMIT_RAW_GYRO,
           golden::REF_NOCOMMIT_T, golden::REF_NOCOMMIT_ANG);
@@ -92,7 +146,8 @@ fn the_yaw_fixture_separates_the_flex_tier_from_the_gravity_tier() {
 #[test]
 fn the_footing_name_describes_the_reference_config() {
     let r = ReplayConfig::reference();
-    assert_eq!(SCORING_FOOTING, "ref-100hz-ema0.5-flex");
+    assert_eq!(SCORING_FOOTING, "ref-100hz-ema0.5-flexrec");
+    assert_eq!(r.flex_axis_fit, mobile_imu_core::replay::FlexAxisFit::Recording);
     assert_eq!(r.tick_s, ANALYSIS_TICK_S);
     assert_eq!(ANALYSIS_TICK_S, 0.01);
     assert_eq!(r.ema_alpha, 0.5);
@@ -153,7 +208,7 @@ fn under_a_release_override_the_axis_is_learnt_from_the_override_onward() {
     // Rule (plan section 3.1): the estimator is fed from the sample that
     // captures the zero pose, whichever path captured it. The reference has
     // no override, so this pins the Rust behaviour on its own.
-    let (l, first_y) = two_axis_log(35);
+    let (l, first_y) = two_axis_log(60);
     assert_eq!(l[first_y].sensor, Sensor::Gyro);
 
     let auto = replay(&l, &ReplayConfig::reference()).expect("auto release");
