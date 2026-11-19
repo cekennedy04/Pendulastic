@@ -499,12 +499,12 @@ test('footing provenance survives export and import, and trends keep the footing
   const { sessionSeries } = await import('../src/views/trends.js');
   const trials = [
     { ...masTrials[0], side: 'left', score_formula_id: null, scoring_footing: null },
-    { ...masTrials[0], side: 'left', score_formula_id: 'pt5trough-ref-2026-11-16', scoring_footing: 'ref-100hz-ema0.5-flex' },
+    { ...masTrials[0], side: 'left', score_formula_id: 'pt5troughfb-ref-2026-11-16', scoring_footing: 'ref-100hz-ema0.5-flex' },
   ];
   const files = buildExportFiles({ session: masSession, patient: masPatient, trials });
   const m = parseManifest(files.find((f) => f.name.endsWith('-manifest.json')).text);
   assert.deepEqual(m.trials.map((t) => t.scoring_footing), [null, 'ref-100hz-ema0.5-flex']);
-  assert.deepEqual(m.trials.map((t) => t.score_formula_id), [null, 'pt5trough-ref-2026-11-16']);
+  assert.deepEqual(m.trials.map((t) => t.score_formula_id), [null, 'pt5troughfb-ref-2026-11-16']);
   const s = sessionSeries([{ id: 's', timestamp: 1 }], { s: m.trials }, { scoreOf: () => 0.2 });
   assert.equal(s.length, 2);
 });

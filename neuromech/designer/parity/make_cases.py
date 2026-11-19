@@ -213,6 +213,14 @@ def edge_cases(idx_rows, seed):
     from scipy.interpolate import PchipInterpolator
     lone = 100.0 + PchipInterpolator([0, 2.0, 2.5, 2.9, 3.4, 12.0], [60, 60, 0, 8, 0, 0])(t)
     E.append(("lone-early-peak", t, lone, 2.0))
+    # period-estimate fallback: a damped swing whose settled angle creeps off the centre it rang down
+    # about, so the height pass (measured from the settled angle) finds fewer than three extrema
+    ts = np.clip(t - 1.0, 0, None)
+    wn = 2 * np.pi * 0.9; wd = wn * np.sqrt(1 - 0.3 ** 2)
+    ring = 1 - np.exp(-0.3 * wn * ts) * (np.cos(wd * ts) + 0.3 * wn / wd * np.sin(wd * ts))
+    for off in (-1.5, -1.0, -0.5, 0.0):
+        creep = off * (1 - np.exp(-np.clip(ts - 2.0, 0, None) / 1.5))
+        E.append((f"period-fallback-creep{off:+g}", t, 180.0 - 42.0 * ring + creep, 1.0))
     for name, tt, aa, rel in E:
         _write_case(idx_rows, f"edge/{name}", "edge", tt, aa, rel)
 

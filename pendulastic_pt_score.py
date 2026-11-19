@@ -1015,7 +1015,11 @@ _DIAGNOSTIC_KEYS = ["omega_max_n", "omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt5trough-ref-2026-11-16"   # 5-term set (omega_max_n
+# "fb" (2026-11-19): the period-estimate pass falls back to prominence alone
+# when the height pass finds fewer than three extrema (compute_pt_params).
+# It is an extraction change, not a change to the summed set, but it moves the
+# score of every curve that sat on that cliff, so the id moves with it.
+SCORE_FORMULA_ID = "pt5troughfb-ref-2026-11-16"   # 5-term set (omega_max_n
 #                                               dropped), N counted from the
 #                                               first trough, divisor = terms
 #                                               actually scored; see the
@@ -3438,6 +3442,20 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     min_amp  = max(1.0, 0.05 * A0)
     pk_i2, _ = find_peaks( phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
     tr_i2, _ = find_peaks(-phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
+    # Period-estimate fallback. `height` here is measured from the SETTLED
+    # angle, and a heavily damped swing rings down about a centre that is not
+    # the settled angle, so its later extrema can be real (prominent) and still
+    # sit within min_amp of neutral. When that leaves fewer than three, the
+    # centring below never ran and the curve was scored in the uncentred frame:
+    # a 0.4 deg shift in the settled angle (a phone 25 cm below the knee is
+    # enough) took a synthetic N = 2.5 swing from PT7 0.37 to 1.23, with N 0.5,
+    # f unmeasured and area_ratio 0.15 -> 0.62 (2026-11-18). The first pass
+    # only has to find the swing's period, so in that case it asks for
+    # prominence alone. Curves that already yield three extrema are untouched,
+    # and the counting pass below keeps both thresholds.
+    if len(pk_i2) + len(tr_i2) < 3:
+        pk_i2, _ = find_peaks( phi_s, distance=min_dist, prominence=min_amp)
+        tr_i2, _ = find_peaks(-phi_s, distance=min_dist, prominence=min_amp)
     # Second pass, against the swing's own centre rather than the settled
     # angle. The first pass exists only to estimate the period the boxcar
     # needs -- extremum spacing is a half period -- so this refines the same

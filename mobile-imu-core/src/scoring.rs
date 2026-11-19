@@ -1078,6 +1078,20 @@ pub fn compute_pt_params_with_limit(
     let neg_phi_s: Vec<f64> = phi_s.iter().map(|v| -v).collect();
     let mut pk_i = find_peaks(&phi_s, Some(min_amp), Some(min_dist), Some(min_amp));
     let mut tr_i = find_peaks(&neg_phi_s, Some(min_amp), Some(min_dist), Some(min_amp));
+    // Period-estimate fallback, mirroring the reference. `height` here is
+    // measured from the SETTLED angle, and a heavily damped swing rings down
+    // about a centre that is not the settled angle, so its later extrema can
+    // be real (prominent) and still sit within min_amp of neutral. When that
+    // leaves fewer than three, the centring below never ran and the curve was
+    // scored in the uncentred frame: a 0.4 deg shift in the settled angle took
+    // a synthetic N = 2.5 swing from PT7 0.37 to 1.23. The first pass only has
+    // to find the swing's period, so in that case it asks for prominence
+    // alone. Curves that already yield three extrema are untouched, and the
+    // counting pass below keeps both thresholds.
+    if pk_i.len() + tr_i.len() < 3 {
+        pk_i = find_peaks(&phi_s, None, Some(min_dist), Some(min_amp));
+        tr_i = find_peaks(&neg_phi_s, None, Some(min_dist), Some(min_amp));
+    }
     // Second pass, against the swing's own centre rather than the settled
     // angle. The first pass exists only to estimate the period the boxcar
     // needs -- extremum spacing is a half period -- so this refines the same

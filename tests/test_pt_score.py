@@ -1661,3 +1661,51 @@ def test_a_peak_is_kept_when_no_trough_is_ever_counted():
     params = p.compute_pt_params(t, a, release_idx=100, detrend=False)
     assert params is not None
     assert params["N"] == 0.5, params["N"]
+
+
+def _swing_settling_off_centre(creep_deg, zeta=0.3):
+    """Hold at 180, a damped step of 42 deg, and a slow creep of the settled
+    angle: the leg comes to rest `creep_deg` away from the centre it rang down
+    about (a phone 25 cm below the knee does this by 0.4 deg)."""
+    t = np.arange(0, 12.0, 0.01)
+    ts = np.clip(t - 1.0, 0, None)
+    wn = 2 * math.pi * 0.9
+    wd = wn * math.sqrt(1 - zeta ** 2)
+    ring = 1 - np.exp(-zeta * wn * ts) * (np.cos(wd * ts) + zeta * wn / wd * np.sin(wd * ts))
+    creep = creep_deg * (1 - np.exp(-np.clip(ts - 2.0, 0, None) / 1.5))
+    return t, 180.0 - 42.0 * ring + creep
+
+
+@pytest.mark.parametrize("creep_deg", [-1.5, -1.0, -0.5, 0.5, 1.0, 1.5])
+def test_a_small_shift_in_the_settled_angle_does_not_switch_centring_off(creep_deg):
+    """The period-estimate fallback (2026-11-19). Measured from the settled
+    angle, this swing's second extremum sits at about min_amp. Before the
+    fallback a 0.5 deg creep the wrong way left the height pass with two
+    extrema, the swing-centring never ran, and the same swing read N 1.0 with
+    area_ratio 0.36 to 0.50 (PT 0.73 to 0.94 against 0.46)."""
+    from pendulastic_pt_score import mas_estimate
+    clean = compute_pt_params(*_swing_settling_off_centre(0.0), detrend=False)
+    p = compute_pt_params(*_swing_settling_off_centre(creep_deg), detrend=False)
+    assert p["N"] == clean["N"] == 1.5
+    assert abs(p["area_ratio"] - clean["area_ratio"]) < 0.01
+    assert abs(mas_estimate(p)["pt7"] - mas_estimate(clean)["pt7"]) < 0.01
+
+
+def test_the_fallback_leaves_a_curve_with_three_extrema_alone(monkeypatch):
+    """It only runs when the height pass finds fewer than three extrema, so a
+    normally ringing swing never reaches the second find_peaks pair."""
+    import pendulastic_pt_score as P
+    calls = []
+    real = P.find_peaks
+
+    def spy(x, **kw):
+        calls.append(sorted(kw))
+        return real(x, **kw)
+
+    monkeypatch.setattr(P, "find_peaks", spy)
+    P.compute_pt_params(*_swing_settling_off_centre(0.0, zeta=0.1), detrend=False)
+    assert calls and all("height" in kw for kw in calls)
+    calls.clear()
+    P.compute_pt_params(*_swing_settling_off_centre(-1.0), detrend=False)
+    assert any("height" not in kw for kw in calls)
+

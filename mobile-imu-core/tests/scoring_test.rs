@@ -112,6 +112,29 @@ fn nominal_decaying_swing_matches_the_python_reference() {
     assert_eq!(p.tr_i, golden::TRIAL_SWING_TR_I.to_vec(), "trough indices");
 }
 
+/// The period-estimate fallback. Measured from the settled angle, this
+/// swing's second extremum is under `min_amp`, so the height pass finds two
+/// extrema; without the fallback the centring never runs and the curve reads
+/// N 1.0, area_ratio 0.435 instead of the N 1.5, 0.186 of the same swing with
+/// no creep in its settled angle.
+#[test]
+fn a_swing_settling_off_its_centre_is_still_centred() {
+    let p = compute_pt_params(golden::TRIAL_PERIOD_FALLBACK_T, golden::TRIAL_PERIOD_FALLBACK_ANG, None, false)
+        .expect("scored");
+    close(p.n, 1.5, 1e-9, "N");
+    assert!(p.area_ratio < 0.2, "area_ratio {} is the uncentred reading", p.area_ratio);
+    close(p.n, golden::TRIAL_PERIOD_FALLBACK_N, 1e-9, "N vs reference");
+    close(p.r2n, golden::TRIAL_PERIOD_FALLBACK_R2N, 1e-6, "R2n");
+    close(p.f, golden::TRIAL_PERIOD_FALLBACK_F, 1e-6, "f");
+    close(p.area_ratio, golden::TRIAL_PERIOD_FALLBACK_AREA_RATIO, 1e-6, "area_ratio");
+    close(p.phi_max_ratio, golden::TRIAL_PERIOD_FALLBACK_PHI_MAX_RATIO, 1e-6, "phi_max_ratio");
+    close(p.a0_deg, golden::TRIAL_PERIOD_FALLBACK_A0_DEG, 1e-6, "A0");
+    close(p.a1_deg, golden::TRIAL_PERIOD_FALLBACK_A1_DEG, 1e-6, "A1");
+    close(p.neutral_deg, golden::TRIAL_PERIOD_FALLBACK_NEUTRAL_DEG, 1e-6, "neutral");
+    assert_eq!(p.pk_i, golden::TRIAL_PERIOD_FALLBACK_PK_I.to_vec(), "peak indices");
+    assert_eq!(p.tr_i, golden::TRIAL_PERIOD_FALLBACK_TR_I.to_vec(), "trough indices");
+}
+
 #[test]
 fn nominal_swing_recovers_the_synthetic_frequency() {
     // The fixture is a 1.0 Hz decaying cosine. Reading that back out is a

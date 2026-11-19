@@ -103,7 +103,7 @@ namespace Pendulastic
         public const double PT_HEALTHY_MAX = 0.1709;
         public const double PT_BORDERLINE_MAX = 0.3528;
         public const string PT_ZONES_CALIBRATED_FOR = "pt7-2026-08-24";
-        public const string SCORE_FORMULA_ID = "pt5trough-ref-2026-11-16";
+        public const string SCORE_FORMULA_ID = "pt5troughfb-ref-2026-11-16";
         public const double EXCURSION_REF_MEAN_DEG = 46.6;
         public const double EXCURSION_REF_SD_DEG = 11.1;
         public const int EXCURSION_REF_N = 53;
@@ -231,6 +231,15 @@ namespace Pendulastic
             double[] neg_phi_s = Negate(phi_s);
             int[] pk = FindPeaks(phi_s, min_amp, min_dist, min_amp);
             int[] tr = FindPeaks(neg_phi_s, min_amp, min_dist, min_amp);
+            // Period-estimate fallback, mirroring the reference: when the height
+            // test (measured from the settled angle) leaves fewer than three
+            // extrema, find the swing's period on prominence alone. The counting
+            // pass below keeps both thresholds.
+            if (pk.Length + tr.Length < 3)
+            {
+                pk = FindPeaks(phi_s, double.NegativeInfinity, min_dist, min_amp);
+                tr = FindPeaks(neg_phi_s, double.NegativeInfinity, min_dist, min_amp);
+            }
 
             double _dt_c = L > 1 ? Median(Diff(t_r)) : 0.0;
             int[] ext0 = SortedConcat(pk, tr);

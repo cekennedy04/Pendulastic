@@ -304,8 +304,8 @@ test('isQuickTest and isExcluded are safe on junk input', () => {
 
 test('a trial record names the formula and footing that scored it, null when not reported', () => {
   const r = makeTrialRecord({ sessionId: 's1', side: 'left', params, trajectory: null, rawJsonl: 'x', algorithmVersion: '0.4.0',
-    scoreFormulaId: 'pt5trough-ref-2026-11-16', scoringFooting: 'ref-100hz-ema0.5-flex' });
-  assert.equal(r.score_formula_id, 'pt5trough-ref-2026-11-16');
+    scoreFormulaId: 'pt5troughfb-ref-2026-11-16', scoringFooting: 'ref-100hz-ema0.5-flex' });
+  assert.equal(r.score_formula_id, 'pt5troughfb-ref-2026-11-16');
   assert.equal(r.scoring_footing, 'ref-100hz-ema0.5-flex');
   const old = makeTrialRecord({ sessionId: 's1', side: 'left', params, trajectory: null, rawJsonl: 'x', algorithmVersion: '0.3.0' });
   assert.equal(old.score_formula_id, null);

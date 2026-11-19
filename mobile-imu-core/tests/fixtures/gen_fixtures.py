@@ -277,6 +277,22 @@ def main():
 
     emit_trial("TRIAL_SWING", t, ang, "Decaying-oscillation trial (the nominal case)")
 
+    # A heavily damped swing whose settled angle creeps 1 deg away from the
+    # centre it rang down about. Measured from that settled angle, its second
+    # extremum falls under min_amp, the height pass finds two extrema, and
+    # before the period-estimate fallback the swing-centring never ran: this
+    # curve read N 1.0 and area_ratio 0.435 (PT 0.84) where the same swing
+    # with no creep reads N 1.5 and 0.186 (PT 0.46). With the fallback the
+    # creep moves the score by 0.003.
+    tf = np.arange(0, 12.0, 0.01)
+    tsf = np.clip(tf - 1.0, 0, None)
+    wnf = 2 * np.pi * 0.9
+    wdf = wnf * np.sqrt(1 - 0.3 ** 2)
+    ringf = 1 - np.exp(-0.3 * wnf * tsf) * (np.cos(wdf * tsf) + 0.3 * wnf / wdf * np.sin(wdf * tsf))
+    creepf = -1.0 * (1 - np.exp(-np.clip(tsf - 2.0, 0, None) / 1.5))
+    emit_trial("TRIAL_PERIOD_FALLBACK", tf, 180.0 - 42.0 * ringf + creepf,
+               "Damped swing settling 1 deg off its ring-down centre (period-estimate fallback)")
+
     # Severe spasticity: a single drop with no rebound at all. N must read 0,
     # and the resting tail must not be miscounted as extra cycles.
     n2, fs2 = 400, 100.0
