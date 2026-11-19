@@ -245,5 +245,6 @@ def test_export_recentred_ships_only_the_owners_three_and_lists_what_else_would_
     assert by["A-P1p"]["fits_recentred"] == "yes" and "not shipped" in by["A-P1p"]["included"]
     label = open(tmp_path / RB.RECENTRED_DIR / "README.txt").read()
     assert "RE-CENTRED RENDER" in label and "offset_deg" in label and all(ord(c) < 128 for c in label)
-    assert "KNOWN PROBLEM" in label and "28 deg or more" in label
+    assert "START THE PHONE CAPTURE DURING THE 3 s HOLD" in label and "align the phone to the encoder by the release" in label
+    assert "Until this is settled" not in label and "28 deg or more" in label
     assert all(0.20 < float(by[s]["lift_peak_rad_s"]) < 0.23 for s in RB.RECENTRED_SIDS)

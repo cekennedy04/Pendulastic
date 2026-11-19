@@ -38,6 +38,11 @@ one Windows process. The E-stop is the protection. Stop at the first surprise.
    [ ] e. The same design at 0.70 (the default). PLAY.
    After each: did the arm do what the plot showed, and stop at 0? If anything looked wrong,
    STOP here and bring the sent\ folder back.
+   [ ] f. Only if playing library_recentred\ (needs a limit of 28 deg or more; -MaxDeg 25 refuses them):
+          the fast part of those swings is at NEGATIVE angles, down to -27 deg. Read its README.txt.
+          PHONE APP on those files: start the capture DURING THE 3 s HOLD after the lift, not before
+          PLAY (owner, 2026-11-19). The phone record then has no sync pulses; the phone and the
+          encoder are aligned by the release.
 
 3. DURING A RUN
    * STOP (Designer) or q / Esc (PLAY.bat): the setpoint ramps back to 0 at 10 deg/s.
