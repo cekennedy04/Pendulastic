@@ -213,6 +213,30 @@ def edge_cases(idx_rows, seed):
     from scipy.interpolate import PchipInterpolator
     lone = 100.0 + PchipInterpolator([0, 2.0, 2.5, 2.9, 3.4, 12.0], [60, 60, 0, 8, 0, 0])(t)
     E.append(("lone-early-peak", t, lone, 2.0))
+    # period-estimate fallback: a damped swing whose settled angle creeps off the centre it rang down
+    # about, so the height pass (measured from the settled angle) finds fewer than three extrema
+    ts = np.clip(t - 1.0, 0, None)
+    wn = 2 * np.pi * 0.9; wd = wn * np.sqrt(1 - 0.3 ** 2)
+    ring = 1 - np.exp(-0.3 * wn * ts) * (np.cos(wd * ts) + 0.3 * wn / wd * np.sin(wd * ts))
+    for off in (-1.5, -1.0, -0.5, 0.0):
+        creep = off * (1 - np.exp(-np.clip(ts - 2.0, 0, None) / 1.5))
+        E.append((f"period-fallback-creep{off:+g}", t, 180.0 - 42.0 * ring + creep, 1.0))
+    for zeta in (0.4, 0.45):
+        wdz = wn * np.sqrt(1 - zeta ** 2)
+        ringz = 1 - np.exp(-zeta * wn * ts) * (np.cos(wdz * ts) + zeta * wn / wdz * np.sin(wdz * ts))
+        for off in (-1.5, 1.4, 1.7):
+            creep = off * (1 - np.exp(-np.clip(ts - 2.0, 0, None) / 1.5))
+            E.append((f"period-fallback-z{zeta:g}-creep{off:+g}", t, 180.0 - 42.0 * ringz + creep, 1.0))
+    # the fallback's guard: wobble on a limb that dropped and never swung (must not be centred), and a
+    # late bump that leaves the retry with fewer than three extrema
+    def fall(depth, tau):
+        return 180.0 - depth * (1 - np.exp(-ts / tau)) * (t >= 1.0)
+    E.append(("fallback-guard-tremor-2p5hz", t, fall(20.0, 0.3) + 0.6 * np.sin(2 * np.pi * 2.5 * t), 1.0))
+    E.append(("fallback-guard-tremor-1hz", t, fall(40.0, 0.3) + 1.0 * np.sin(2 * np.pi * 1.0 * t), 1.0))
+    E.append(("fallback-guard-clonus-2hz", t, fall(60.0, 0.2) + 8.0 * np.exp(-ts) * np.sin(2 * np.pi * 2.0 * ts), 1.0))
+    E.append(("fallback-guard-clonus-5hz", t, fall(60.0, 0.2) + 8.0 * np.exp(-ts) * np.sin(2 * np.pi * 5.0 * ts), 1.0))
+    E.append(("fallback-guard-clonus-7hz", t, fall(60.0, 0.2) + 8.0 * np.exp(-ts) * np.sin(2 * np.pi * 7.0 * ts), 1.0))
+    E.append(("fallback-guard-late-bump", t, fall(20.0, 0.15) + 1.2 * np.exp(-((t - 5.0) / 0.2) ** 2), 1.0))
     for name, tt, aa, rel in E:
         _write_case(idx_rows, f"edge/{name}", "edge", tt, aa, rel)
 

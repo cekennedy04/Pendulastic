@@ -50,7 +50,7 @@ pub const N_PARAMS: usize = 5;
 
 /// `pendulastic_pt_score.SCORE_FORMULA_ID` — which scored set this is. Bump it
 /// with any change to the summed parameters; see `PT_ZONES_CALIBRATED_FOR`.
-pub const SCORE_FORMULA_ID: &str = "pt5trough-ref-2026-11-16";
+pub const SCORE_FORMULA_ID: &str = "pt5troughfb-ref-2026-11-16";
 
 /// `pendulastic_pt_score._DENOM_FLOOR`.
 const DENOM_FLOOR: f64 = 0.1;

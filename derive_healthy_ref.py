@@ -28,6 +28,13 @@ is measured from that resting angle -- varies. A median over trials the scorer
 refuses (or over trials whose release was mis-detected, which shrinks A0) is a
 median of a different population from the one the reference is applied to.
 
+NOT ADOPTED, 2026-11-19, with the period-estimate fallback
+(SCORE_FORMULA_ID "pt5troughfb-ref-2026-11-16"): one more trial becomes
+interpretable (38 trials, the same 11 legs and 7 people) and the trial medians
+would read R2n 0.9241, phi_max_ratio 0.6256, omega_max_n 6.5771, f 0.9471,
+area_ratio 0.1722, N unchanged at 6.0. HEALTHY_REF still ships the 2026-11-16
+values below; whether to re-derive is an open owner decision (STATUS.md).
+
 RESULT 2026-11-16, with N counted from the first trough on top of the bound
 (SCORE_FORMULA_ID "pt5trough-ref-2026-11-16"): the same 37 trials; f trial
 median 0.9511 -> 0.9501 [0.942 - 0.975], every other entry unchanged. The

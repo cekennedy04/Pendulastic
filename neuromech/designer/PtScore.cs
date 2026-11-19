@@ -100,10 +100,11 @@ namespace Pendulastic
         public const double SG_WINDOW_S = 0.10;
         public const double OSCILLATION_GAP_FACTOR = 2.5;
         public const double AREA_RATIO_WARN = 0.55;
+        public const double PERIOD_FALLBACK_MAX_HZ = 2.0;
         public const double PT_HEALTHY_MAX = 0.1709;
         public const double PT_BORDERLINE_MAX = 0.3528;
         public const string PT_ZONES_CALIBRATED_FOR = "pt7-2026-08-24";
-        public const string SCORE_FORMULA_ID = "pt5trough-ref-2026-11-16";
+        public const string SCORE_FORMULA_ID = "pt5troughfb-ref-2026-11-16";
         public const double EXCURSION_REF_MEAN_DEG = 46.6;
         public const double EXCURSION_REF_SD_DEG = 11.1;
         public const int EXCURSION_REF_N = 53;
@@ -231,6 +232,31 @@ namespace Pendulastic
             double[] neg_phi_s = Negate(phi_s);
             int[] pk = FindPeaks(phi_s, min_amp, min_dist, min_amp);
             int[] tr = FindPeaks(neg_phi_s, min_amp, min_dist, min_amp);
+            // Period-estimate fallback, mirroring the reference: when the height
+            // test (measured from the settled angle) leaves fewer than three
+            // extrema, find the swing's period on prominence alone. The counting
+            // pass below keeps both thresholds.
+            // Guarded (wobble or clonus on a limb that never swung must not be centred): used only when
+            // the height pass found at least one extremum, the retry finds at least three, and their
+            // spacing is a limb's, not a tremor's (PERIOD_FALLBACK_MAX_HZ).
+            int n_height = pk.Length + tr.Length;
+            if (n_height >= 1 && n_height < 3)
+            {
+                int[] pk_f = FindPeaks(phi_s, double.NegativeInfinity, min_dist, min_amp);
+                int[] tr_f = FindPeaks(neg_phi_s, double.NegativeInfinity, min_dist, min_amp);
+                int[] ext_f = SortedConcat(pk_f, tr_f);
+                if (ext_f.Length >= 3)
+                {
+                    double[] tf = new double[ext_f.Length];
+                    for (int i = 0; i < ext_f.Length; i++) tf[i] = t_r[ext_f[i]];
+                    double half_f = Median(Diff(tf));
+                    if (half_f * 2.0 * PERIOD_FALLBACK_MAX_HZ >= 1.0)
+                    {
+                        pk = pk_f;
+                        tr = tr_f;
+                    }
+                }
+            }
 
             double _dt_c = L > 1 ? Median(Diff(t_r)) : 0.0;
             int[] ext0 = SortedConcat(pk, tr);

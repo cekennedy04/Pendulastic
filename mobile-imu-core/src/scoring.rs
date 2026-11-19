@@ -42,6 +42,11 @@ pub const AREA_RATIO_WARN: f64 = 0.55;
 // constant, so it never limits how many times a leg may swing.
 const OSCILLATION_GAP_FACTOR: f64 = 2.5;
 
+/// `pendulastic_pt_score.PERIOD_FALLBACK_MAX_HZ`: the fastest swing the
+/// period-estimate fallback accepts as a limb's ring-down rather than a
+/// tremor's (see `compute_pt_params_with_limit`).
+pub const PERIOD_FALLBACK_MAX_HZ: f64 = 2.0;
+
 /// Which direction the swing is unbalanced in — Popović 2018 Fig 7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpasticityType {
@@ -1078,6 +1083,38 @@ pub fn compute_pt_params_with_limit(
     let neg_phi_s: Vec<f64> = phi_s.iter().map(|v| -v).collect();
     let mut pk_i = find_peaks(&phi_s, Some(min_amp), Some(min_dist), Some(min_amp));
     let mut tr_i = find_peaks(&neg_phi_s, Some(min_amp), Some(min_dist), Some(min_amp));
+    // Period-estimate fallback, mirroring the reference. `height` here is
+    // measured from the SETTLED angle, and a heavily damped swing rings down
+    // about a centre that is not the settled angle, so its later extrema can
+    // be real (prominent) and still sit within min_amp of neutral. When that
+    // leaves fewer than three, the centring below never ran and the curve was
+    // scored in the uncentred frame: a 0.4 deg shift in the settled angle took
+    // a synthetic N = 2.5 swing from PT7 0.37 to 1.23. The first pass only has
+    // to find the swing's period, so in that case it asks for prominence
+    // alone. Curves that already yield three extrema are untouched, and the
+    // counting pass below keeps both thresholds.
+    //
+    // Guarded, because prominence alone also finds tail wobble or clonus on a
+    // limb that dropped and never swung, and centring that on the wobble's
+    // period reads a severe curve as a mild one. The retry is used only when
+    // the height pass found at least one extremum itself, the retry finds at
+    // least three (otherwise the height pass's result stands), and their
+    // spacing is a limb's, not a tremor's (`PERIOD_FALLBACK_MAX_HZ`).
+    let n_height = pk_i.len() + tr_i.len();
+    if (1..3).contains(&n_height) {
+        let pk_f = find_peaks(&phi_s, None, Some(min_dist), Some(min_amp));
+        let tr_f = find_peaks(&neg_phi_s, None, Some(min_dist), Some(min_amp));
+        let mut ext_f: Vec<usize> = pk_f.iter().chain(tr_f.iter()).copied().collect();
+        ext_f.sort_unstable();
+        if ext_f.len() >= 3 {
+            let gaps: Vec<f64> = ext_f.windows(2).map(|w| t_r[w[1]] - t_r[w[0]]).collect();
+            let half_f = nanmedian(&gaps);
+            if half_f * 2.0 * PERIOD_FALLBACK_MAX_HZ >= 1.0 {
+                pk_i = pk_f;
+                tr_i = tr_f;
+            }
+        }
+    }
     // Second pass, against the swing's own centre rather than the settled
     // angle. The first pass exists only to estimate the period the boxcar
     // needs -- extremum spacing is a half period -- so this refines the same
