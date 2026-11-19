@@ -26,11 +26,18 @@ scores move. "Not verified" is stated, never implied.
 2. **Whether to ship more re-centred files** (2026-11-18). The owner chose to re-centre the
    lambda 1.0, 1.2 and 1.4 swings (see workstream 1). 31 more scenarios that are refused at 1:1 would
    pass the guard re-centred; they are listed in `library_recentred/INDEX.csv` and not shipped.
-3. **Re-centred files end the phone app's trial before the swing** (2026-11-18, simulated, from the
-   contrarian review of PR #124). Their lift peaks at 0.22 rad/s, under the app's 0.3 rad/s stillness
-   guard, so a capture started before PLAY settles when the lift ends. Options: start the capture in
-   the hold, a faster lift for these files (changes the preamble), or change the app's settle rule.
-   `docs/reports/2026-11-18-neuromech-lambda-1p4.md`, "Second opinion".
+
+## Decisions taken (owner, 2026-11-19)
+
+- **Phone capture on the re-centred files: start it during the 3 s hold after the lift.** In replay
+  (simulated) a capture started before PLAY was ended by the app when the slow lift ended, before the
+  swing (lift 0.22 rad/s, under the app's 0.3 rad/s stillness guard; contrarian review of PR #124).
+  Consequence: the phone record of these files has no sync pulses, so the phone and the encoder are
+  aligned by the release, not by the pulses. The encoder log still has the pulses and aligns to the
+  command as on any other file. Trajectories, guard, scorer and app are unchanged. The procedure is
+  in `library_recentred/README.txt`, `START_HERE.txt` and `RIG_CHECKLIST.txt`. Not chosen: a faster
+  lift for these files (parked on branch `claude/neuromech-recentred-fast-lift`, no PR) and a change
+  to the app's settle rule. `docs/reports/2026-11-18-neuromech-lambda-1p4.md`, "Second opinion".
 
 ## Decisions taken (owner, 2026-11-16)
 
