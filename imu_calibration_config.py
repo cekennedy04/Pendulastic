@@ -44,8 +44,8 @@ DEFAULT_CONFIG = {
 #:
 #: "flex_axis_fit": "recording" (2026-11-19, crate 0.5.0, footing
 #: "ref-100hz-ema0.5-flexrec", was "ref-100hz-ema0.5-flex"): the flexion axis
-#: is fitted on every sample from the zero to the end of the recording and is
-#: not levelled. It moves every replayed angle, so phone-derived corpus numbers
+#: is fitted on every sample from the zero until the swing has died (one
+#: second of quiet; see imu_flex_axis.QUIET_STOP_S) and is not levelled. It moves every replayed angle, so phone-derived corpus numbers
 #: from before that date are on the old footing. A config without the key
 #: replays the old way ("opening": 25 samples, levelled), which is what the
 #: live desktop server still does.
@@ -68,6 +68,10 @@ _REQUIRED_TYPES = {
 
 def _is_valid(cfg) -> bool:
     if not isinstance(cfg, dict):
+        return False
+    # Optional; a value replay_trial would refuse makes the file invalid here
+    # rather than raising in the middle of a replay.
+    if cfg.get("flex_axis_fit", "opening") not in ("opening", "recording"):
         return False
     for key, types in _REQUIRED_TYPES.items():
         if key not in cfg or not isinstance(cfg[key], types):

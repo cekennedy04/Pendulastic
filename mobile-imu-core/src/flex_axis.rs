@@ -73,8 +73,16 @@ pub const MAX_GRAVITY_TILT_COS: f64 = 0.5;
 /// reversal, so a second of quiet means the swing is over and whatever moves
 /// the phone afterwards (the leg lifted back, the phone unstrapped) is not the
 /// swing. Mirrors `QUIET_STOP_S` in `imu_flex_axis.py`, where the test that
-/// set it is described.
+/// set it is described. The quiet clock is the sum of the `dt` the filter
+/// integrates, so a sample with a missing or implausible timestamp counts as
+/// the nominal 10 ms.
 pub const QUIET_STOP_S: f64 = 1.0;
+
+/// Quiet does not close a whole-recording fit that has fewer qualifying
+/// samples than this: a leg caught a moment after release, held for over a
+/// second and then swinging on would otherwise be fitted on the let-go
+/// transient alone. Mirrors `QUIET_STOP_MIN_SAMPLES` in `imu_flex_axis.py`.
+pub const QUIET_STOP_MIN_SAMPLES: usize = 50;
 
 /// Online principal-axis estimator. Feed it raw gyro vectors via
 /// [`FlexAxisEstimator::update`]; read [`FlexAxisEstimator::axis`] for the
@@ -140,15 +148,12 @@ impl FlexAxisEstimator {
     /// [`FlexAxisEstimator::finalize`], and not levelled. Mirrors
     /// `FlexAxisEstimator.whole_recording` in `imu_flex_axis.py`.
     ///
-    /// Why it differs from the live rule (measured on the paired corpus,
-    /// 2026-11-19, against the axis the phone actually turned about): 25
-    /// samples is the release itself, and the axis fitted on it is a median
-    /// 18.5° out; fitted on the whole recording it is 10.0°. Levelling made it
-    /// worse (21.1° with it): the accelerometer sample it levels against is
-    /// taken with the shank already falling, and the swing axis is not
-    /// horizontal to begin with (a median 8.4° out). A replay has the whole
-    /// recording; the live trace cannot look ahead and keeps the 25-sample
-    /// rule.
+    /// Why it differs from the live rule: on the paired corpus (2026-11-19)
+    /// the live rule's axis is a median 21.1° from the axis the phone actually
+    /// turned about, and this one 10.9°. The numbers for each ingredient
+    /// (window length, levelling) and what not levelling gives up are in the
+    /// Python docstring. The live trace cannot look ahead and keeps the
+    /// 25-sample rule.
     pub fn whole_recording(threshold: f64) -> Self {
         Self { level: false, quiet_stop: Some(QUIET_STOP_S), ..Self::new(threshold, usize::MAX) }
     }
@@ -159,11 +164,12 @@ impl FlexAxisEstimator {
     }
 
     /// Report `dt` seconds spent under the threshold. Only a whole-recording
-    /// fit that has already taken a sample counts it; the fit closes when the
-    /// quiet since the last qualifying sample reaches [`QUIET_STOP_S`].
+    /// fit that already has [`QUIET_STOP_MIN_SAMPLES`] qualifying samples
+    /// counts it; the fit closes when the quiet since the last qualifying
+    /// sample reaches [`QUIET_STOP_S`].
     pub fn quiet(&mut self, dt: f64) {
         let Some(limit) = self.quiet_stop else { return };
-        if self.n == 0 || self.closed || !(dt.is_finite() && dt > 0.0) {
+        if self.n < QUIET_STOP_MIN_SAMPLES || self.closed || !(dt.is_finite() && dt > 0.0) {
             return;
         }
         self.quiet += dt;
@@ -807,6 +813,11 @@ mod whole_recording_tests {
     fn a_second_of_quiet_closes_the_fit_and_less_does_not() {
         let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
         e.quiet(5.0); // before any sample: not counted
+        for _ in 0..QUIET_STOP_MIN_SAMPLES - 1 {
+            e.update([2.0, 0.0, 0.0], None);
+        }
+        e.quiet(5.0); // one sample short of the minimum: still not counted
+        assert!(!e.closed());
         e.update([2.0, 0.0, 0.0], None);
         for _ in 0..99 {
             e.quiet(0.01);

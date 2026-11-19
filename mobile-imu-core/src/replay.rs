@@ -86,7 +86,7 @@ pub enum FlexAxisFit {
 
 /// Name of the footing [`ReplayConfig::reference`] builds, stored on every
 /// trial record from crate 0.4.0 (`scoring_footing`). Pinned against the
-/// config's own fields by `tests/replay_test.rs`.
+/// config's own fields by `tests/reference_footing_test.rs`.
 ///
 /// `-flexrec` (crate 0.5.0) replaced `-flex`: the flexion axis is fitted on
 /// the whole recording and not levelled, which moves every angle, so trends
@@ -94,9 +94,10 @@ pub enum FlexAxisFit {
 pub const SCORING_FOOTING: &str = "ref-100hz-ema0.5-flexrec";
 
 impl ReplayConfig {
-    /// The reference footing: the configuration `imu_calibration_tuner`
-    /// scores the corpus with (`imu_calibration_config.REFERENCE_REPLAY_CONFIG`
-    /// in Python) — 10 ms ticks, EMA 0.5 per 50 ms, flex projection on. The
+    /// The reference footing: `imu_calibration_config.REFERENCE_REPLAY_CONFIG`
+    /// in Python. (Python tools that replay with the local config file or a
+    /// hard-coded config are NOT on it; from 0.5.0 they differ in the axis
+    /// fit.) — 10 ms ticks, EMA 0.5 per 50 ms, flex projection on. The
     /// app scores on it from crate 0.4.0 so a trial scores the same on the
     /// phone and on the desktop. Pinned here, not passed in from JS, so
     /// `ALGORITHM_VERSION` (crate version, git revision, wasm hash) changes
@@ -409,8 +410,9 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
 
     let (release_quat, release_idx, g_zero) = zero.ok_or(TrialError::ReleaseNeverDetected)?;
     // The final estimate projects every sample, pre-release ones included, as
-    // `replay_trial` projects every tick with the axis it ends on. If the
-    // swing never commits an axis the provisional one is used, as there.
+    // `replay_trial` projects every tick with the axis it ends on. Under
+    // `Opening`, a swing that never commits keeps the provisional axis, as
+    // there; under `Recording` the fit is committed here on whatever it has.
     if cfg.flex_axis_fit == FlexAxisFit::Recording {
         flex.finalize();
     }

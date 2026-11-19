@@ -351,7 +351,18 @@ def test_the_phone_replays_on_the_reference_footing():
     footing = re.search(r'pub const SCORING_FOOTING: &str = "([^"]+)";', replay_rs)
     assert footing and footing.group(1) == "ref-100hz-ema0.5-flexrec"
     assert ref["flex_axis_fit"] == "recording"
-    assert "flex_axis_fit: FlexAxisFit::Recording" in replay_rs
+    assert "flex_axis_fit: FlexAxisFit::Recording," in body
+    # The whole-recording fit's constants, both sides.
+    import imu_flex_axis as fa
+    flex_rs = open(os.path.join(core, "flex_axis.rs"), encoding="utf-8").read()
+    for name, value in (("QUIET_STOP_S", fa.QUIET_STOP_S), ("DEFAULT_THRESHOLD", fa.DEFAULT_THRESHOLD),
+                        ("MAX_GRAVITY_TILT_COS", fa.MAX_GRAVITY_TILT_COS)):
+        m = re.search(rf"pub const {name}: f64 = ([0-9.]+);", flex_rs)
+        assert m and float(m.group(1)) == value, name
+    for name, value in (("MIN_COMMIT_SAMPLES", fa.MIN_COMMIT_SAMPLES),
+                        ("QUIET_STOP_MIN_SAMPLES", fa.QUIET_STOP_MIN_SAMPLES)):
+        m = re.search(rf"pub const {name}: usize = (\d+);", flex_rs)
+        assert m and int(m.group(1)) == value, name
 
 
 def test_the_selectable_superset_matches_between_languages():

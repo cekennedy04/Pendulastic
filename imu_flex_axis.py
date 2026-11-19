@@ -39,8 +39,8 @@ deliberately an online algorithm rather than a batch PCA: it accumulates,
 exposes a provisional axis immediately (so there is never a window with no
 axis at all), and commits a refined estimate after MIN_COMMIT_SAMPLES
 qualifying samples. Both call sites drive it through the same `update()`, so
-replay and live cannot diverge -- which is the property that matters, since
-imu_calibration_tuner exists precisely to reproduce the server's arithmetic.
+a replay whose config does not name a fit reproduces the server's arithmetic.
+(On the reference footing replay deliberately does NOT: see "Scored replay".)
 
 Scored replay (2026-11-19)
 --------------------------
@@ -104,7 +104,21 @@ MAX_GRAVITY_TILT_COS = 0.5      # 0.5 => 30 deg off horizontal
 # (and that one also differs by 12.7 deg with nothing appended, because it has
 # real motion after a quiet second). It does nothing for a leg caught while it
 # is still swinging -- no axis rule does, and the score is wrong on every rule.
+#
+# The quiet clock is the sum of the gyro sample intervals the filter integrates
+# (the caller's dt), so a sample with a missing or implausible timestamp counts
+# as the nominal 10 ms.
 QUIET_STOP_S = 1.0
+
+# ...but not before the fit has this many qualifying samples. A leg that is
+# caught a moment after release, held for more than a second and then swings
+# on would otherwise close the fit on the let-go transient alone (independent
+# review, 2026-11-19: 24 deg axis error on a synthetic catch of 1.1 s, against
+# 7 deg with no stop and 15 deg on the opening rule). Until the fit has half a
+# second of fast motion at 100 Hz, quiet does not close it and the swing that
+# follows the catch is taken in. The cost: a recording with fewer qualifying
+# samples than this in total is not protected from later handling.
+QUIET_STOP_MIN_SAMPLES = 50
 
 
 class FlexAxisEstimator:
@@ -142,16 +156,24 @@ class FlexAxisEstimator:
         caller through quiet()) or the recording ends, committed once by
         finalize(), and not levelled.
 
-        Why this differs from the live rule (measured on the paired corpus,
-        2026-11-19, against the axis the phone actually turned about): 25
-        samples is the release itself, and the axis fitted on it is a median
-        18.5 deg out; fitted on the whole recording it is 10.0. Levelling made
-        it worse, not better (21.1 with it): the accelerometer sample it levels
-        against is taken with the shank already falling (a median 8.4 deg from
-        the hold gravity, reading 0.76 g), and the swing axis is not horizontal
-        to begin with (a median 8.4 deg out). A replay has the whole recording,
-        so it has no reason to stop at the first quarter second. The live
-        trace cannot look ahead and keeps the 25-sample rule.
+        Why this differs from the live rule (paired corpus, 2026-11-19, axis
+        error against the axis the phone actually turned about, medians). On
+        141 trials in the diagnosis: 25 samples levelled (the live rule) 21.1
+        deg; 25 samples not levelled 18.5; whole recording not levelled 10.0;
+        whole recording levelled against the HOLD gravity 12.2. As shipped,
+        through imu_optitrack_validation on 146 trials: 21.1 to 10.9. So the
+        gain is from fitting on the swing instead of the release, and
+        levelling costs about 2 deg under either fit: the swing axis is not
+        horizontal to begin with (a median 8.4 deg out), and the live rule
+        levels against an accelerometer sample taken with the shank already
+        falling (a median 8.4 deg from the hold gravity, reading 0.76 g).
+
+        What not levelling gives up, not measured: a levelled axis is
+        perpendicular to gravity at release, so rotation about the vertical
+        (which the filter cannot observe and so drifts) does not project onto
+        the angle. An unlevelled axis lets it in at the sine of its tilt.
+
+        The live trace cannot look ahead and keeps the 25-sample rule.
         """
         est = cls(threshold, min_samples=None, level=False)
         est._quiet_stop = QUIET_STOP_S
@@ -164,10 +186,12 @@ class FlexAxisEstimator:
 
     def quiet(self, dt) -> None:
         """Report `dt` seconds spent under the threshold. Only a
-        whole-recording fit that has already taken a sample counts it; the fit
-        closes when the quiet since the last qualifying sample reaches
-        QUIET_STOP_S."""
+        whole-recording fit that already has QUIET_STOP_MIN_SAMPLES qualifying
+        samples counts it; the fit closes when the quiet since the last
+        qualifying sample reaches QUIET_STOP_S."""
         if self._quiet_stop is None or self._n == 0 or self._closed:
+            return
+        if self._n < QUIET_STOP_MIN_SAMPLES:
             return
         try:
             dt = float(dt)

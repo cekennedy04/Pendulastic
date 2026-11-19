@@ -324,7 +324,7 @@ def test_a_swing_entirely_off_the_axis_reads_as_fully_lateral():
 
 # -- Whole-recording fit (the scored replay's rule, 2026-11-19) --------------
 
-from imu_flex_axis import QUIET_STOP_S   # noqa: E402
+from imu_flex_axis import QUIET_STOP_S, QUIET_STOP_MIN_SAMPLES   # noqa: E402
 
 
 def test_whole_recording_commits_only_on_finalize_and_is_not_levelled():
@@ -373,6 +373,10 @@ def test_a_single_qualifying_sample_gives_its_own_direction():
 def test_a_second_of_quiet_closes_the_fit_and_less_does_not():
     est = FlexAxisEstimator.whole_recording()
     est.quiet(5.0)                        # before any sample: not counted
+    for _ in range(QUIET_STOP_MIN_SAMPLES - 1):
+        est.update([2.0, 0.0, 0.0])
+    est.quiet(5.0)                        # one short of the minimum: still not counted
+    assert not est.closed
     est.update([2.0, 0.0, 0.0])
     for _ in range(99):
         est.quiet(0.01)
@@ -386,7 +390,7 @@ def test_a_second_of_quiet_closes_the_fit_and_less_does_not():
     est.quiet(0.01)
     assert est.closed and QUIET_STOP_S == 1.0
     est.update([0.0, 9.0, 0.0])           # the phone being taken off
-    assert est.n_samples == 2
+    assert est.n_samples == QUIET_STOP_MIN_SAMPLES + 1
     est.finalize()
     assert _angle_between(est.axis, [1.0, 0.0, 0.0]) < 1e-9
 
@@ -397,10 +401,26 @@ def test_the_opening_fit_ignores_quiet_and_reset_reopens_a_closed_fit():
     opening.quiet(10.0)
     assert not opening.closed
     whole = FlexAxisEstimator.whole_recording()
-    whole.update([2.0, 0.0, 0.0])
+    for _ in range(QUIET_STOP_MIN_SAMPLES):
+        whole.update([2.0, 0.0, 0.0])
     whole.quiet(2.0)
     assert whole.closed
     whole.reset()
     assert not whole.closed and whole.n_samples == 0
     whole.update([0.0, 2.0, 0.0])
     assert whole.n_samples == 1
+
+
+def test_a_catch_just_after_release_does_not_close_the_fit_on_the_transient():
+    """Found in review: let go with a sideways twitch, caught 0.15 s later,
+    held 1.5 s, then the leg swings. The fit must take the swing in."""
+    est = FlexAxisEstimator.whole_recording()
+    for _ in range(12):
+        est.update([0.5, 2.5, 0.0])       # the let-go, mostly about y
+    for _ in range(150):
+        est.quiet(0.01)                   # the catch
+    assert not est.closed
+    for v in np.concatenate([_swing_burst([1.0, 0.0, 0.0]), -_swing_burst([1.0, 0.0, 0.0], peak=4.0)]):
+        est.update(v)
+    est.finalize()
+    assert _angle_between(est.axis, [1.0, 0.0, 0.0]) < 12.0

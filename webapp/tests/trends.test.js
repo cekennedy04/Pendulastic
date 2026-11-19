@@ -324,3 +324,25 @@ test('trend series points carry their footing so the chart can break the line', 
   ], 'a0');
   assert.deepEqual(leg.points.map((p) => p.seg), ['app-20hz-ema0.3', 'ref-100hz-ema0.5-flex']);
 });
+
+// Crate 0.5.0 fitted the flexion axis on the whole swing, which moves every
+// angle: the footing id changed (-flex to -flexrec) so the line breaks there too.
+test('the whole-swing axis footing is its own trend segment', async () => {
+  const { seriesFor } = await import('../src/trend-charts.js');
+  const [leg] = seriesFor([
+    { leg: 'left', date: 1, a0: 40, footing: 'ref-100hz-ema0.5-flex' },
+    { leg: 'left', date: 2, a0: 44, footing: 'ref-100hz-ema0.5-flexrec' },
+    { leg: 'left', date: 3, a0: 45, footing: 'ref-100hz-ema0.5-flexrec' },
+  ], 'a0');
+  assert.deepEqual(leg.points.map((p) => p.seg),
+    ['ref-100hz-ema0.5-flex', 'ref-100hz-ema0.5-flexrec', 'ref-100hz-ema0.5-flexrec']);
+  const s = sessionSeries(
+    [{ id: 's1', timestamp: 1 }],
+    { s1: [
+      { side: 'left', params: { a0_deg: 40 }, scoring_footing: 'ref-100hz-ema0.5-flex' },
+      { side: 'left', params: { a0_deg: 50 }, scoring_footing: 'ref-100hz-ema0.5-flexrec' },
+    ] },
+    { scoreOf: () => 0.3 },
+  );
+  assert.equal(s.length, 2);
+});

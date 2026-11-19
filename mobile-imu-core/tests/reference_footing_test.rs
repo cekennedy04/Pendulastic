@@ -205,7 +205,8 @@ fn two_axis_log(x_steps: usize) -> (Vec<RawSample>, usize) {
 
 #[test]
 fn under_a_release_override_the_axis_is_learnt_from_the_override_onward() {
-    // Rule (plan section 3.1): the estimator is fed from the sample that
+    // Rule (2026-11-16 footing plan, section 3.1; unchanged by the 0.5.0
+    // whole-recording fit): the estimator is fed from the sample that
     // captures the zero pose, whichever path captured it. The reference has
     // no override, so this pins the Rust behaviour on its own.
     let (l, first_y) = two_axis_log(60);
