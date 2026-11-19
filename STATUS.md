@@ -206,12 +206,14 @@ scores move. "Not verified" is stated, never implied.
   app's offline scorer places the release inside the lift on some scenarios and takes
   the first sync pulse as the release when given a whole recording.
 
-- **Early-catch release (owner approved 2026-11-18; PR open, branch
+- **Early-catch release (owner approved 2026-11-18; PR #126 open, branch
   `fix/release-stalled-departure`):** a drop that catches a few degrees in and then swings
   (severity axis lambda 1.2 to 1.5) came back "release not found": the first drop peaks under
   1.0 rad/s and settles below the 0.3 rad/s guard, so the detector revoked the hold as
   handling. A departure that has turned at least 2 degrees may now stall for up to 0.5 s and
-  resume the same way; it is zeroed on the pose where it began. Rust `calibration.rs` /
+  resume the same way, within 1.0 s of when it began; it is zeroed on the pose where it
+  began. Known trade-off: a leg lowered a few degrees, paused under 0.5 s and let go the same
+  way is now read as one release (it was refused). Rust `calibration.rs` /
   `replay.rs` and the Python mirror `imu_calibration_tuner.py`; not a scorer change. Corpus
   (179 phone trials, Python reference replay): 167 curves bit-identical, one slow release
   newly zeroed, 11 still without a release. Lambda 2.0 is still not found. Regression:

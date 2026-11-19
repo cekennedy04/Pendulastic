@@ -139,9 +139,14 @@ pub struct TrialResult {
     pub t: Vec<f64>,
     /// EMA-smoothed angle on the tick grid. Index 0 is NaN by contract.
     pub angle_deg: Vec<f64>,
-    /// Orientation at the release instant — the trial's zero pose.
+    /// The trial's zero pose: the orientation at the release instant. For a
+    /// release that stalled and resumed (`calibration::STALL_*`) this is the
+    /// pose where the departure BEGAN, before the first movement, not where
+    /// the capture threshold was finally crossed.
     pub release_quat: Quat,
-    /// Index into the input slice where release fired.
+    /// Index into the input slice of the sample the zero pose was taken at:
+    /// where release fired, or, for a release that stalled and resumed, where
+    /// its departure began (up to `STALL_DEPARTURE_MAX_S` earlier).
     pub release_idx: usize,
     /// The flexion axis the swing was projected onto (sensor frame, unit),
     /// or `None` when `flex_axis_capture` is off or no sample after the zero

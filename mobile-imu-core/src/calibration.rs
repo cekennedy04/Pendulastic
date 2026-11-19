@@ -179,18 +179,32 @@ fn is_noise_excursion(peak_rad_s: f64, duration_s: f64) -> bool {
 /// rate and the rotation so far) continues the same departure. Motion the
 /// other way, or no motion in time, revokes the hold exactly as before.
 ///
-/// Swept on 179 corpus phone trials and the synthetic defects: every trial
-/// that fired before fires on the same sample, one slow release that never
-/// fired now does, and a hold that was handled or released early is still
-/// refused. The result is the same for 0.3 to 0.8 s and 0.5 to 2 degrees.
+/// A departure that has stalled must reach the capture threshold within
+/// [`STALL_DEPARTURE_MAX_S`] of when it began, and every above-guard sample
+/// after a resume must keep turning the same way, or the hold is revoked. So
+/// a leg lowered in small steps cannot be chained into one long "departure"
+/// and zeroed on a pose from seconds earlier.
+///
+/// WHAT THIS ADMITS. The gyro cannot tell an early catch from an examiner who
+/// lowers the leg a few degrees, pauses under half a second and lets go, or
+/// who gives it a second push the same way: both are now one release, zeroed
+/// before the first movement. The old rule refused the first (no release
+/// found) and, if a calm second followed, zeroed the second on the later pose.
+/// Handling in another direction, a pause over [`STALL_MAX_S`], or a
+/// departure longer than [`STALL_DEPARTURE_MAX_S`] is refused as before.
+///
+/// Swept with the Python mirror on 179 corpus phone trials: every trial that
+/// fired before fires on the same sample and one slow release that never
+/// fired now does. That is a statement about those trials, not a guarantee.
 /// Mirrors `imu_calibration_tuner.py`'s `_STALL_*`.
 pub const STALL_MAX_S: f64 = 0.5;
 pub const STALL_MIN_ROTATION_DEG: f64 = 2.0;
 pub const STALL_RESUME_MIN_COS: f64 = 0.7;
+pub const STALL_DEPARTURE_MAX_S: f64 = 1.0;
 
-/// Longest sample interval integrated into a departure's rotation; a longer
-/// gap is a dropout, not motion.
-const STALL_MAX_DT_S: f64 = 0.5;
+/// Longest sample interval integrated into a departure's rotation. A longer
+/// gap is a dropout, not motion, and contributes nothing.
+pub const STALL_MAX_DT_S: f64 = 0.1;
 
 /// Two-state zero-capture eligibility machine (KTD9). `calm_qualified`: a
 /// genuine trailing-window calm period has been confirmed and not yet spent.
@@ -200,7 +214,10 @@ const STALL_MAX_DT_S: f64 = 0.5;
 /// excursion settles back below guard before ever reaching the capture
 /// threshold, it's treated as handling, not a release: both flags reset and
 /// a fresh full calm window is required before the next excursion can be
-/// trusted.
+/// trusted. Two exceptions: an excursion small and brief enough to be sensor
+/// noise leaves the hold qualified (`NOISE_EXCURSION_*`), and one that has
+/// already turned the segment is held open briefly in case it resumes
+/// (`STALL_*`).
 ///
 /// This deliberately replaces a single permanent "ever calm" latch, which a
 /// calm hold followed by an unrelated later handling burst could fool into
@@ -212,8 +229,10 @@ pub struct ReleaseDetector {
     /// one that settles can be told apart as noise or handling.
     excursion_t0: f64,
     excursion_peak: f64,
-    /// Rotation vector (rad) integrated over the current departure, stalls
-    /// included: how far and which way the segment has turned since the hold.
+    /// Rotation vector (rad) integrated from the raw gyro over the above-guard
+    /// samples of the current departure, across any stalls: roughly how far
+    /// and which way the segment has turned since the hold. Calm samples and
+    /// dropouts are not integrated, and no bias is removed.
     excursion_rot: Vec3,
     /// The departure settled after real rotation and may still resume (see
     /// [`STALL_MAX_S`]); `stall_t0` is when it settled.
@@ -251,6 +270,25 @@ impl ReleaseDetector {
             last_t: None,
             armed: true,
         }
+    }
+
+    /// Whether `omega` turns the way the current departure has turned so far.
+    fn same_way(&self, omega: Vec3, omega_mag: f64) -> bool {
+        let rot_mag = norm3(self.excursion_rot);
+        let cos = (omega[0] * self.excursion_rot[0]
+            + omega[1] * self.excursion_rot[1]
+            + omega[2] * self.excursion_rot[2])
+            / (omega_mag * rot_mag + 1e-12);
+        cos >= STALL_RESUME_MIN_COS
+    }
+
+    /// The departure in progress was handling: a fresh calm window is needed
+    /// before the next one can be trusted.
+    fn revoke(&mut self) {
+        self.stalled = false;
+        self.pending_departure = false;
+        self.resumed = false;
+        self.calm_qualified = false;
     }
 
     /// True until a release has been captured; once released, further
@@ -292,17 +330,20 @@ impl ReleaseDetector {
         let omega_mag = norm3(omega);
         let is_calm_sample = omega_mag < ZERO_CAPTURE_GUARD_RAD_S;
         let dt = match self.last_t {
-            Some(prev) => (now - prev).clamp(0.0, STALL_MAX_DT_S),
-            None => 0.0,
+            Some(prev) if now > prev && now - prev <= STALL_MAX_DT_S => now - prev,
+            _ => 0.0,
         };
         self.last_t = Some(now);
 
-        // A stalled departure that did not resume in time was handling after
-        // all: revoke, as an excursion that settles always did.
-        if self.stalled && now - self.stall_t0 > STALL_MAX_S {
-            self.stalled = false;
-            self.resumed = false;
-            self.calm_qualified = false;
+        // A stalled departure that did not resume in time, or one that has
+        // stalled and still not reached the capture threshold long after it
+        // began, was handling after all: revoke, as an excursion that settles
+        // always did.
+        let stall_expired = self.stalled && now - self.stall_t0 > STALL_MAX_S;
+        let departure_expired = (self.stalled || (self.pending_departure && self.resumed))
+            && now - self.excursion_t0 > STALL_DEPARTURE_MAX_S;
+        if stall_expired || departure_expired {
+            self.revoke();
         }
 
         // Earn eligibility only while not already mid-departure — reflects
@@ -315,19 +356,17 @@ impl ReleaseDetector {
             // Motion again within the stall window: the same departure if it
             // turns the way the segment was already going, handling if not.
             self.stalled = false;
-            let rot_mag = norm3(self.excursion_rot);
-            let cos = (omega[0] * self.excursion_rot[0]
-                + omega[1] * self.excursion_rot[1]
-                + omega[2] * self.excursion_rot[2])
-                / (omega_mag * rot_mag + 1e-12);
-            if cos >= STALL_RESUME_MIN_COS {
+            if self.same_way(omega, omega_mag) {
                 self.pending_departure = true;
                 self.resumed = true;
                 self.excursion_peak = self.excursion_peak.max(omega_mag);
             } else {
-                self.resumed = false;
-                self.calm_qualified = false;
+                self.revoke();
             }
+        } else if self.pending_departure && self.resumed && !is_calm_sample && !self.same_way(omega, omega_mag) {
+            // A resumed departure has to KEEP turning the same way: one sample
+            // the right way followed by a burst about another axis is handling.
+            self.revoke();
         } else if self.calm_qualified && !self.pending_departure && !is_calm_sample {
             // First above-guard sample after a qualified calm period: a
             // candidate release ramp begins.

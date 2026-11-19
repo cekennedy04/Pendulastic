@@ -152,15 +152,31 @@ def _is_noise_excursion(peak_rad_s: float, duration_s: float) -> bool:
 # pose snapshotted when its departure began, because by the time it fires the
 # leg is already several degrees into its fall.
 #
-# Swept on 179 corpus phone trials and the synthetic defects: every trial that
-# fired before fires on the same sample, one slow release that never fired now
-# does, and a hold that was handled or released early is still refused. The
-# result is the same for 0.3 to 0.8 s and 0.5 to 2 degrees. Mirrored by
+# A departure that has stalled must reach the capture threshold within
+# _STALL_DEPARTURE_MAX_S of when it began, and every above-guard sample after a
+# resume must keep turning the same way, or the hold is revoked. So a leg
+# lowered in small steps cannot be chained into one long "departure" and zeroed
+# on a pose from seconds earlier.
+#
+# WHAT THIS ADMITS. The gyro cannot tell an early catch from an examiner who
+# lowers the leg a few degrees, pauses under half a second and lets go, or who
+# gives it a second push the same way: both are now one release, zeroed before
+# the first movement. The old rule refused the first and, if a calm second
+# followed, zeroed the second on the later pose. Handling in another direction,
+# a pause over _STALL_MAX_S, or a departure longer than _STALL_DEPARTURE_MAX_S
+# is refused as before.
+#
+# Swept on 179 corpus phone trials: every trial that fired before fires on the
+# same sample and one slow release that never fired now does. That is a
+# statement about those trials, not a guarantee. Mirrored by
 # mobile-imu-core/src/calibration.rs STALL_*.
 _STALL_MAX_S = 0.5
 _STALL_MIN_ROTATION_DEG = 2.0
 _STALL_RESUME_MIN_COS = 0.7
-_STALL_MAX_DT_S = 0.5
+_STALL_DEPARTURE_MAX_S = 1.0
+# Longest sample interval integrated into a departure's rotation: a longer gap
+# is a dropout, not motion, and contributes nothing.
+_STALL_MAX_DT_S = 0.1
 
 
 TUNING_GRID = [
@@ -481,16 +497,29 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
             is_calm_sample = omega_mag < _ZERO_CAPTURE_GUARD_RAD_S
 
             rot_dt = 0.0
-            if st.last_gyro_t is not None:
-                rot_dt = min(max(samp["t"] - st.last_gyro_t, 0.0), _STALL_MAX_DT_S)
+            if st.last_gyro_t is not None and 0.0 < samp["t"] - st.last_gyro_t <= _STALL_MAX_DT_S:
+                rot_dt = samp["t"] - st.last_gyro_t
             st.last_gyro_t = samp["t"]
 
-            # A stalled departure that did not resume in time was handling
-            # after all: revoke, as an excursion that settles always did.
-            if st.stalled and samp["t"] - st.stall_t0 > _STALL_MAX_S:
+            def _same_way():
+                return float(np.dot(v, st.excursion_rot)) / (
+                    omega_mag * float(np.linalg.norm(st.excursion_rot)) + 1e-12
+                ) >= _STALL_RESUME_MIN_COS
+
+            def _revoke():
                 st.stalled = False
+                st.pending_departure = False
                 st.resumed = False
                 st.calm_qualified = False
+
+            # A stalled departure that did not resume in time, or one that has
+            # stalled and still not reached the capture threshold long after it
+            # began, was handling after all: revoke, as an excursion that
+            # settles always did.
+            if ((st.stalled and samp["t"] - st.stall_t0 > _STALL_MAX_S)
+                    or ((st.stalled or (st.pending_departure and st.resumed))
+                        and samp["t"] - st.excursion_t0 > _STALL_DEPARTURE_MAX_S)):
+                _revoke()
 
             # Earn eligibility only while not already mid-departure: read
             # from gyro_hold_buf before this sample is appended to it
@@ -506,15 +535,18 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
                 # it turns the way the segment was already going, handling if
                 # not.
                 st.stalled = False
-                cos = float(np.dot(v, st.excursion_rot)) / (
-                    omega_mag * float(np.linalg.norm(st.excursion_rot)) + 1e-12)
-                if cos >= _STALL_RESUME_MIN_COS:
+                if _same_way():
                     st.pending_departure = True
                     st.resumed = True
                     st.excursion_peak = max(st.excursion_peak, omega_mag)
                 else:
-                    st.resumed = False
-                    st.calm_qualified = False
+                    _revoke()
+            elif (st.pending_departure and st.resumed and not is_calm_sample
+                    and not _same_way()):
+                # A resumed departure has to KEEP turning the same way: one
+                # sample the right way then a burst about another axis is
+                # handling.
+                _revoke()
             elif st.calm_qualified and not st.pending_departure and not is_calm_sample:
                 # First above-guard sample after a qualified calm period:
                 # a candidate release ramp begins. Eligibility is not

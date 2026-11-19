@@ -217,6 +217,87 @@ fn release_detector_does_not_resume_a_stall_that_is_handling() {
     }
 }
 
+#[test]
+fn release_detector_follows_a_departure_through_two_stalls() {
+    // 0.1 s drops and 0.1 s stalls: the whole departure is 0.4 s old when the
+    // swing arrives, inside STALL_DEPARTURE_MAX_S.
+    let step = (5, [0.8, 0.0, 0.0]);
+    let rest = (5, [0.02, 0.0, 0.0]);
+    let (fired, resumed, began) = run_detector(&[step, rest, step, rest, (10, [2.0, 0.0, 0.0])]);
+    assert_eq!(fired, Some(70.0 * 0.02));
+    assert!(resumed);
+    assert_eq!(began, Some(50.0 * 0.02), "still the pose before the FIRST drop");
+}
+
+#[test]
+fn release_detector_bounds_the_whole_departure_not_just_each_stall() {
+    // Each stall (0.4 s) is under STALL_MAX_S, but the swing arrives 1.2 s
+    // after the departure began: a leg lowered in steps, not an early catch.
+    let step = (10, [0.8, 0.0, 0.0]);
+    let rest = (20, [0.02, 0.0, 0.0]);
+    assert_eq!(run_detector(&[step, rest, step, rest, (10, [2.0, 0.0, 0.0])]).0, None);
+    // And a departure that resumes and then creeps on under the capture rate
+    // is cut off at the same limit rather than held open indefinitely.
+    let creep = (60, [0.5, 0.0, 0.0]);
+    assert_eq!(run_detector(&[step, (5, [0.02, 0.0, 0.0]), creep, (10, [2.0, 0.0, 0.0])]).0, None);
+}
+
+#[test]
+fn release_detector_checks_direction_on_every_sample_after_a_resume() {
+    // Resumes the right way for two samples (under the capture rate), then a
+    // burst about another axis: handling, although the resume itself passed.
+    let segs = [
+        (10, [0.8, 0.0, 0.0]),
+        (5, [0.02, 0.0, 0.0]),
+        (2, [0.8, 0.0, 0.0]),
+        (10, [0.0, 2.0, 0.0]),
+    ];
+    assert_eq!(run_detector(&segs).0, None);
+}
+
+#[test]
+fn release_detector_forgets_a_refused_departure_before_the_next_release() {
+    // A stall that turned back, a fresh calm 1.2 s, then a direct release:
+    // found, and not reported as resumed (so zeroed where it fires).
+    let segs = [
+        (10, [0.8, 0.0, 0.0]),
+        (5, [0.02, 0.0, 0.0]),
+        (5, [-0.8, 0.0, 0.0]),
+        (60, [0.02, 0.0, 0.0]),
+        (5, [1.5, 0.0, 0.0]),
+    ];
+    let (fired, resumed, began) = run_detector(&segs);
+    assert_eq!(fired, Some(130.0 * 0.02));
+    assert!(!resumed);
+    assert_eq!(began, Some(130.0 * 0.02));
+}
+
+#[test]
+fn release_detector_does_not_count_a_dropout_as_rotation() {
+    // One 0.6 rad/s sample arriving after a 0.3 s gap in the stream. Counted
+    // over the gap it would be 10 degrees and held open as a stall; a dropout
+    // is not motion, so it is a single unexplained sample and the hold is
+    // revoked as before.
+    let mut detector = ReleaseDetector::new();
+    let mut hold_buf: SampleBuf = Vec::new();
+    let mut times: Vec<(f64, [f64; 3])> = (0..100).map(|i| (i as f64 * 0.02, [0.05, 0.0, 0.0])).collect();
+    let t_gap = 99.0 * 0.02 + 0.3;
+    times.push((t_gap, [0.6, 0.0, 0.0]));
+    for k in 1..=5 {
+        times.push((t_gap + k as f64 * 0.02, [0.02, 0.0, 0.0]));
+    }
+    for k in 6..=15 {
+        times.push((t_gap + k as f64 * 0.02, [2.0, 0.0, 0.0]));
+    }
+    let mut fired = false;
+    for (t, v) in times {
+        fired |= detector.on_gyro_sample(v, &hold_buf, t);
+        hold_buf.push((t, v));
+        hold_buf.retain(|(tt, _)| *tt >= t - 1.0);
+    }
+    assert!(!fired);
+}
+
 // ---- MadgwickAhrs -------------------------------------------------------
 
 /// A still, TILTED sensor seeded from its accel must stay where the seed put

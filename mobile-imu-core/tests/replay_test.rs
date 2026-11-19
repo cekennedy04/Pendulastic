@@ -249,6 +249,57 @@ fn a_stall_is_not_a_release_when_it_lasts_too_long_or_turns_back() {
     }
 }
 
+/// A behaviour change, stated rather than hidden. Before the stall rule this
+/// log was refused (and this fixture, with the release about x, was the body
+/// of `a_handling_excursion_still_revokes_release_detection`). The gyro cannot
+/// tell "lowered 7 degrees, paused 0.3 s, let go" from an early catch, so it is
+/// now ONE release, zeroed before the first movement. The same pause with the
+/// release about another axis, or a pause over STALL_MAX_S, is still refused.
+#[test]
+fn handling_the_same_way_as_the_release_within_the_stall_window_is_one_release() {
+    let cfg = ReplayConfig::default();
+    let log = segments_log(&[
+        (150, [0.01, 0.0, 0.0]),
+        (18, [0.4, 0.0, 0.0]),
+        (18, [0.01, 0.0, 0.0]),
+        (30, [2.0, 0.0, 0.0]),
+        (300, [0.01, 0.0, 0.0]),
+    ]);
+    let r = replay(&log, &cfg).expect("accepted as one release");
+    assert_eq!(r.release_idx, 2 * 150 + 1);
+}
+
+#[test]
+fn a_leg_lowered_in_steps_is_not_chained_into_one_release() {
+    let cfg = ReplayConfig::default();
+    // Three 9 degree steps 0.4 s apart, each continuing the last, then the
+    // swing: every stall is under STALL_MAX_S, but the whole thing runs past
+    // STALL_DEPARTURE_MAX_S, so the zero cannot come from 1.6 s back.
+    let log = segments_log(&[
+        (150, [0.01, 0.0, 0.0]),
+        (12, [0.8, 0.0, 0.0]),
+        (24, [0.01, 0.0, 0.0]),
+        (12, [0.8, 0.0, 0.0]),
+        (24, [0.01, 0.0, 0.0]),
+        (12, [0.8, 0.0, 0.0]),
+        (12, [0.01, 0.0, 0.0]),
+        (30, [2.0, 0.0, 0.0]),
+        (300, [0.01, 0.0, 0.0]),
+    ]);
+    assert_eq!(replay(&log, &cfg).err(), Some(TrialError::ReleaseNeverDetected));
+}
+
+#[test]
+fn a_release_override_is_authoritative_over_a_resumed_departure() {
+    // The detector would zero this trial where the departure began (step 150);
+    // a clinician's override names its own sample and is zeroed there.
+    let log = stalled_release_log(6, [2.0, 0.0, 0.0]);
+    let override_idx = 2 * 170 + 1;
+    let cfg = ReplayConfig { release_override: Some(override_idx), ..ReplayConfig::default() };
+    let r = replay(&log, &cfg).expect("release found");
+    assert_eq!(r.release_idx, override_idx);
+}
+
 #[test]
 fn a_direct_release_is_still_zeroed_where_it_fires() {
     let cfg = ReplayConfig::default();
