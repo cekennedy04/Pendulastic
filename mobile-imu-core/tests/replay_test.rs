@@ -183,20 +183,129 @@ fn an_explicit_override_wins_even_when_auto_detection_fires_earlier() {
 /// `exc_mag` rad/s, 0.3 s calm -- shorter than the window needed to re-qualify
 /// -- then a real release burst and a long rest. Mirrors
 /// `_hold_excursion_gap_then_release_samples` in test_imu_calibration_tuner.py.
+///
+/// The excursion turns about x and the release about y, as in the Python
+/// fixture: handling is motion that is not the start of the release. An
+/// excursion the release CONTINUES is `stalled_release_log` below.
 fn hold_excursion_gap_then_release_log(exc_mag: f64, exc_steps: usize) -> Vec<RawSample> {
-    let mut segs: Vec<(usize, f64)> = vec![(150, 0.01), (exc_steps, exc_mag), (18, 0.01), (30, 2.0), (300, 0.01)];
+    segments_log(&[
+        (150, [0.01, 0.0, 0.0]),
+        (exc_steps, [exc_mag, 0.0, 0.0]),
+        (18, [0.01, 0.0, 0.0]),
+        (30, [0.0, 2.0, 0.0]),
+        (300, [0.01, 0.0, 0.0]),
+    ])
+}
+
+/// A 60 Hz log of constant-rate gyro segments under a fixed accel.
+fn segments_log(segs: &[(usize, [f64; 3])]) -> Vec<RawSample> {
     let mut out = Vec::new();
     let mut i = 0usize;
-    for (n, w) in segs.drain(..) {
+    for &(n, w) in segs {
         for _ in 0..n {
             let t = i as f64 / 60.0;
             let ts_ms = (t * 1000.0).round() as i64;
             out.push(RawSample { t, ts_ms, sensor: Sensor::Accel, v: [0.0, 0.0, 9.81] });
-            out.push(RawSample { t, ts_ms, sensor: Sensor::Gyro, v: [w, 0.0, 0.0] });
+            out.push(RawSample { t, ts_ms, sensor: Sensor::Gyro, v: w });
             i += 1;
         }
     }
     out
+}
+
+/// 2.5 s calm hold, a first drop of 0.2 s at 0.8 rad/s (9 degrees, under the
+/// capture threshold), a stall of `stall_steps` samples, then the swing at
+/// `swing` rad/s and a long rest: a leg with an early catch.
+fn stalled_release_log(stall_steps: usize, swing: [f64; 3]) -> Vec<RawSample> {
+    segments_log(&[
+        (150, [0.01, 0.0, 0.0]),
+        (12, [0.8, 0.0, 0.0]),
+        (stall_steps, [0.01, 0.0, 0.0]),
+        (30, swing),
+        (300, [0.01, 0.0, 0.0]),
+    ])
+}
+
+#[test]
+fn a_release_that_stalls_and_resumes_is_found_and_zeroed_where_it_began() {
+    let cfg = ReplayConfig::default();
+    // 0.1 s stall, then the swing continues the same way.
+    let r = replay(&stalled_release_log(6, [2.0, 0.0, 0.0]), &cfg).expect("release found");
+    // Zeroed on the first sample of the first drop (gyro sample of step 150),
+    // not where the capture threshold was finally crossed, 0.3 s later.
+    assert_eq!(r.release_idx, 2 * 150 + 1);
+}
+
+#[test]
+fn a_stall_is_not_a_release_when_it_lasts_too_long_or_turns_back() {
+    let cfg = ReplayConfig::default();
+    // 0.6 s is past STALL_MAX_S and short of a fresh calm second.
+    let too_long = stalled_release_log(36, [2.0, 0.0, 0.0]);
+    assert_eq!(replay(&too_long, &cfg).err(), Some(TrialError::ReleaseNeverDetected));
+    // Motion back the other way, or about another axis, is handling.
+    for swing in [[-2.0, 0.0, 0.0], [0.0, 2.0, 0.0]] {
+        let log = stalled_release_log(6, swing);
+        assert_eq!(replay(&log, &cfg).err(), Some(TrialError::ReleaseNeverDetected), "swing={swing:?}");
+    }
+}
+
+/// A behaviour change, stated rather than hidden. Before the stall rule this
+/// log was refused (and this fixture, with the release about x, was the body
+/// of `a_handling_excursion_still_revokes_release_detection`). The gyro cannot
+/// tell "lowered 7 degrees, paused 0.3 s, let go" from an early catch, so it is
+/// now ONE release, zeroed before the first movement. The same pause with the
+/// release about another axis, or a pause over STALL_MAX_S, is still refused.
+#[test]
+fn handling_the_same_way_as_the_release_within_the_stall_window_is_one_release() {
+    let cfg = ReplayConfig::default();
+    let log = segments_log(&[
+        (150, [0.01, 0.0, 0.0]),
+        (18, [0.4, 0.0, 0.0]),
+        (18, [0.01, 0.0, 0.0]),
+        (30, [2.0, 0.0, 0.0]),
+        (300, [0.01, 0.0, 0.0]),
+    ]);
+    let r = replay(&log, &cfg).expect("accepted as one release");
+    assert_eq!(r.release_idx, 2 * 150 + 1);
+}
+
+#[test]
+fn a_leg_lowered_in_steps_is_not_chained_into_one_release() {
+    let cfg = ReplayConfig::default();
+    // Three 9 degree steps 0.4 s apart, each continuing the last, then the
+    // swing: every stall is under STALL_MAX_S, but the whole thing runs past
+    // STALL_DEPARTURE_MAX_S, so the zero cannot come from 1.6 s back.
+    let log = segments_log(&[
+        (150, [0.01, 0.0, 0.0]),
+        (12, [0.8, 0.0, 0.0]),
+        (24, [0.01, 0.0, 0.0]),
+        (12, [0.8, 0.0, 0.0]),
+        (24, [0.01, 0.0, 0.0]),
+        (12, [0.8, 0.0, 0.0]),
+        (12, [0.01, 0.0, 0.0]),
+        (30, [2.0, 0.0, 0.0]),
+        (300, [0.01, 0.0, 0.0]),
+    ]);
+    assert_eq!(replay(&log, &cfg).err(), Some(TrialError::ReleaseNeverDetected));
+}
+
+#[test]
+fn a_release_override_is_authoritative_over_a_resumed_departure() {
+    // The detector would zero this trial where the departure began (step 150);
+    // a clinician's override names its own sample and is zeroed there.
+    let log = stalled_release_log(6, [2.0, 0.0, 0.0]);
+    let override_idx = 2 * 170 + 1;
+    let cfg = ReplayConfig { release_override: Some(override_idx), ..ReplayConfig::default() };
+    let r = replay(&log, &cfg).expect("release found");
+    assert_eq!(r.release_idx, override_idx);
+}
+
+#[test]
+fn a_direct_release_is_still_zeroed_where_it_fires() {
+    let cfg = ReplayConfig::default();
+    let r = replay(&ramp_release_log(600), &cfg).expect("release found");
+    // The ramp starts at step 150 and crosses 1.0 rad/s five steps later.
+    assert_eq!(r.release_idx, 2 * 155 + 1);
 }
 
 #[test]

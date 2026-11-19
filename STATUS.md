@@ -26,17 +26,24 @@ scores move. "Not verified" is stated, never implied.
 2. **Whether to ship more re-centred files** (2026-11-18). The owner chose to re-centre the
    lambda 1.0, 1.2 and 1.4 swings (see workstream 1). 31 more scenarios that are refused at 1:1 would
    pass the guard re-centred; they are listed in `library_recentred/INDEX.csv` and not shipped.
-3. **Re-centred files end the phone app's trial before the swing** (2026-11-18, simulated, from the
-   contrarian review of PR #124). Their lift peaks at 0.22 rad/s, under the app's 0.3 rad/s stillness
-   guard, so a capture started before PLAY settles when the lift ends. Options: start the capture in
-   the hold, a faster lift for these files (changes the preamble), or change the app's settle rule.
-   `docs/reports/2026-11-18-neuromech-lambda-1p4.md`, "Second opinion".
-4. **Dropped OptiTrack frames distort the optical PT score**
+3. **Dropped OptiTrack frames distort the optical PT score**
    (`docs/reports/2026-11-18-pt-score-disagreement-diagnosis.md`): fill short gaps in the
    analysis layer, make the scorer indifferent to them (Python, Rust and C# with parity), or
    restrict to low-gap takes. Recommended: the first now, then decide the second.
-5. **`MIN_HINGE_CONDITIONING`** (0.90, never derived): the conditioning it is compared with
+4. **`MIN_HINGE_CONDITIONING`** (0.90, never derived): the conditioning it is compared with
    changed scale in the loader fix and now marks only gross out-of-plane motion. Keep or move.
+
+## Decisions taken (owner, 2026-11-19)
+
+- **Phone capture on the re-centred files: start it during the 3 s hold after the lift.** In replay
+  (simulated) a capture started before PLAY was ended by the app when the slow lift ended, before the
+  swing (lift 0.22 rad/s, under the app's 0.3 rad/s stillness guard; contrarian review of PR #124).
+  Consequence: the phone record of these files has no sync pulses, so the phone and the encoder are
+  aligned by the release, not by the pulses. The encoder log still has the pulses and aligns to the
+  command as on any other file. Trajectories, guard, scorer and app are unchanged. The procedure is
+  in `library_recentred/README.txt`, `START_HERE.txt` and `RIG_CHECKLIST.txt`. Not chosen: a faster
+  lift for these files (parked on branch `claude/neuromech-recentred-fast-lift`, no PR) and a change
+  to the app's settle rule. `docs/reports/2026-11-18-neuromech-lambda-1p4.md`, "Second opinion".
 
 ## Decisions taken (owner, 2026-11-16)
 
@@ -61,7 +68,8 @@ scores move. "Not verified" is stated, never implied.
   the same day. Step 2 change approved: the
   first-trough drop runs after the active-oscillation window bound.
 - **Release detector:** deferred; no problems seen in use. Revisit only if a problem
-  turns up that is too big to ignore.
+  turns up that is too big to ignore. (2026-11-18: one did, the early-catch release; the
+  owner approved the narrow fix recorded under workstream 2. The redesign stays deferred.)
 - **Clinical-field branches:** `neuromech/fall-speed-b13` and `neuromech/fall-speed-check`
   deleted.
 - **Cleanup:** the 43 daily-report branches deleted; archive pass, September doc rescue and
@@ -230,6 +238,25 @@ scores move. "Not verified" is stated, never implied.
   steady 9 degree sag through the hold is never caught. On rig-format recordings the
   app's offline scorer places the release inside the lift on some scenarios and takes
   the first sync pulse as the release when given a whole recording.
+
+- **Early-catch release (owner approved 2026-11-18; PR #126 open, branch
+  `fix/release-stalled-departure`):** a drop that catches a few degrees in and then swings
+  (severity axis lambda 1.2 to 1.5) came back "release not found": the first drop peaks under
+  1.0 rad/s and settles below the 0.3 rad/s guard, so the detector revoked the hold as
+  handling. A departure that has turned at least 2 degrees may now stall for up to 0.5 s and
+  resume the same way, within 1.0 s of when it began; it is zeroed on the pose where it
+  began. Known trade-off: a leg lowered a few degrees, paused under 0.5 s and let go the same
+  way is now read as one release (it was refused). Rust `calibration.rs` /
+  `replay.rs` and the Python mirror `imu_calibration_tuner.py`; not a scorer change. Corpus
+  (179 phone trials, Python reference replay): 167 curves bit-identical, one slow release
+  newly zeroed, 11 still without a release. Lambda 2.0 is still not found. Regression:
+  `neuromech/tests/test_phone_trial_catch.py`.
+- **Found 2026-11-18, open (owner approved a fix, separate PR to follow):** the app reading
+  PT7 1.23 for 0.39 on `A-P1p`, `B-mixed` and `M-tone_L4` is not sensor noise. The 25 cm
+  lever arm alone moves the settled angle 0.4 degrees, and the scorer's first peak pass
+  (height above the settled angle) then finds fewer than three extrema, which switches
+  swing-centring off: N 2.5 to 0.5, `f` unmeasured, `area_ratio` 0.15 to 0.62. Same in Python
+  and Rust.
 
 ### 3. PT scorer — ACTIVE, gates workstream 1
 - **Goal:** one validated scorer, identical in every language.

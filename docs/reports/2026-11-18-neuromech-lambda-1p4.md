@@ -30,7 +30,7 @@ on is on the falling branch: a stiffer leg, graded milder.
   release at 1:1 and scores 0.14 to 0.18 depending on the plant. See "Second opinion" below.
 - **Re-centred files and the phone app: a capture started before PLAY ends before the swing** (simulated).
   The re-centred lift peaks at 0.22 rad/s, under the app's 0.3 rad/s stillness guard, so the app settles when
-  the lift ends. Open; see "Second opinion".
+  the lift ends. Decided 2026-11-19: start the capture during the hold; see "Second opinion".
 
 ## What limited lambda before this change
 
@@ -176,8 +176,12 @@ does not; the x0.70 lift (0.315 rad/s) clears it by 5%. So the statement above t
 other file" holds for the encoder and the command, not for the phone app. Not changed here, because every fix
 is a decision: start the capture in the hold (loses the pulses in the phone record), give the re-centred files
 a faster lift (changes the preamble that `match_trials` and the Designer assume), or change the app's settle
-rule (the app session's area). The folder's `README.txt` and `START_HERE.txt` carry the warning, and
-`INDEX.csv` has the lift speed (`lift_peak_rad_s`).
+rule (the app session's area). `INDEX.csv` has the lift speed (`lift_peak_rad_s`).
+
+**Decided (owner, 2026-11-19): start the phone capture during the 3 s hold after the lift.** The phone record
+of a re-centred file then has no sync pulses, so the phone and the encoder are aligned by the release; the
+encoder log keeps the pulses. The folder's `README.txt`, `START_HERE.txt` and `RIG_CHECKLIST.txt` carry the
+procedure. The trajectories are unchanged.
 
 **2. "The app never finds the release at lambda 1.4" is a property of the ideal trace.** The plant amplifies
 the early catch: pre-catch peak speed commanded → predicted delivered is 88 → 103°/s at lambda 1.0, 66 → 87 at
