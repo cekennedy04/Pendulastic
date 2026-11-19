@@ -56,6 +56,8 @@ import reliability_stats
 import workbench_engine as engine
 
 GRID_HZ = 60.0
+# The loader's quality flags the sensitivity rows are cut on.
+QUALITY_FLAGS = ("low_marker_coverage", "knee_curve_disagrees_with_plate")
 # A grid point further than this from any tracked optical frame is in a gap;
 # it is left out rather than scored against an interpolated line.
 MAX_GAP_BRIDGE_S = 0.05
@@ -165,6 +167,7 @@ def optical_curves(path: str) -> dict:
     axis, share = lc.swing_axis(tri)
     rv = plate_rotvecs(tri)
     refit = flexion_positive(lc.current_with_axis(tri, bar, axis))
+    loader = knee_axis.knee_angle_from_clusters(shank, thigh, fps)
     return {
         "t": t, "fps": fps, "triangle": tri, "axis": axis, "axis_share": share,
         "shank_flex": flexion_positive(np.degrees(rv @ axis)),
@@ -173,6 +176,9 @@ def optical_curves(path: str) -> dict:
         "refit_jumps": refit_jumps(t, refit),
         "thigh": lc.bar_rotation_deg(bar),
         "coverage": float(np.isfinite(rv).all(axis=1).mean()),
+        "coverage_both": loader.coverage,
+        "plate_agreement_r": loader.plate_agreement_r,
+        "flags": tuple(f for f in loader.flags if f in QUALITY_FLAGS),
     }
 
 
@@ -597,6 +603,9 @@ def evaluate_trial(trial: dict) -> dict:
     opt = imu = None
     try:
         opt = optical_curves(trial["optitrack_path"])
+        row.update(coverage_both=opt["coverage_both"],
+                   plate_agreement_r=opt["plate_agreement_r"],
+                   optical_flags="|".join(opt["flags"]))
         row.update(optical_status="ok", coverage=opt["coverage"],
                    axis_share=opt["axis_share"], refit_jumps=opt["refit_jumps"])
     except Exception as exc:                            # noqa: BLE001
@@ -930,6 +939,35 @@ def _short(err) -> str:
     return text.strip()[:80] or "unknown"
 
 
+def _flagged(row: dict, flag: str) -> bool:
+    return flag in str(row.get("optical_flags") or "").split("|")
+
+
+def sensitivity(rows: list) -> dict:
+    """The headline tracking and PT-score figures again without the takes the
+    loader flags. Flagged takes stay in every main figure; this only shows how
+    much they move it."""
+    cuts = {f"without_{f}": [r for r in rows if not _flagged(r, f)] for f in QUALITY_FLAGS}
+    cuts["without_any_flag"] = [r for r in rows
+                                if not any(_flagged(r, f) for f in QUALITY_FLAGS)]
+    out = {"flag_counts": {f: sum(_flagged(r, f) for r in rows) for f in QUALITY_FLAGS},
+           "any_flag": len(rows) - len(cuts["without_any_flag"])}
+    for label, sub in cuts.items():
+        entry = {"n_trials": len(sub),
+                 "tracking": {name: pooled_tracking(sub, name)
+                              for name in ("fit", "shank", "refit")},
+                 "pt": {}}
+        for ref in ("shank", "refit"):
+            both = [r for r in sub
+                    if r.get(f"{ref}_interpretable") and r.get("imu_interpretable")]
+            legs = leg_medians(both, [f"{s}_pt" for s in ("imu", ref)])
+            entry["pt"][ref] = {"trial": param_agreement(both, "pt", ref),
+                                "leg": param_agreement(legs, "pt", ref),
+                                "verdict": verdict_agreement(sub, ref)}
+        out[label] = entry
+    return out
+
+
 def summarise(rows: list) -> dict:
     """Every aggregate the report quotes. Carries no participant or trial id."""
     scored_keys = sorted({k[len("imu_"):] for r in rows for k in r
@@ -957,6 +995,7 @@ def summarise(rows: list) -> dict:
         "tracking_errors": {},
         "thigh_span": _dist(_num(rows, "thigh_span")),
         "unscorable": unscorable(rows),
+        "sensitivity": sensitivity(rows),
         "lateral": lateral_report(rows),
     }
     for r in rows:

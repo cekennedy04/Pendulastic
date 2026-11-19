@@ -23,6 +23,12 @@ scores move. "Not verified" is stated, never implied.
 
 1. **Contacting GitHub to purge `refs/pull/90`**, which still holds commits with clinical
    fields. The owner will decide later; both branches that carried them are deleted.
+2. **Dropped OptiTrack frames distort the optical PT score**
+   (`docs/reports/2026-11-18-pt-score-disagreement-diagnosis.md`): fill short gaps in the
+   analysis layer, make the scorer indifferent to them (Python, Rust and C# with parity), or
+   restrict to low-gap takes. Recommended: the first now, then decide the second.
+3. **`MIN_HINGE_CONDITIONING`** (0.90, never derived): the conditioning it is compared with
+   changed scale in the loader fix and now marks only gross out-of-plane motion. Keep or move.
 
 ## Decisions taken (owner, 2026-11-16)
 
@@ -289,20 +295,24 @@ scores move. "Not verified" is stated, never implied.
   is stale. Records made after the live app is redeployed carry `ALGORITHM_VERSION`
   `0.2.0+...`. Independent review of the split: `docs/seed-fix-split-review`.
 
-### 5. OptiTrack / RMSE validation — IN REVIEW (validation report)
-- **Canonical branch:** `main` (#81, #88 merged). Open: `claude/optitrack-vs-imu-0130a7`
-  (IMU against OptiTrack on the human recordings; analysis code and report only, no loader or
-  scorer change).
-- **Report:** `docs/reports/2026-11-18-imu-vs-optitrack-validation.md`. On 159 paired trials the
-  sensor tracks the shank plate (RMSE median 3.9 deg, gain 1.00); the app's angle loses amplitude
-  (gain 0.85) through its captured flexion axis; the PT score does not yet match (verdict kappa
-  0.49); the current OptiTrack loader's hinge axis is wrong on 130 of 159 trials.
+### 5. OptiTrack / RMSE validation — IN REVIEW (loader fix)
+- **Canonical branch:** `main` (#81, #88, #125 merged). Open: `fix/optitrack-hinge-axis-refit`
+  (hinge axis fix in `optitrack_knee_axis`, two quality flags, sensitivity rows, and the
+  PT-score disagreement diagnosis; no scorer change).
+- **Reports:** `docs/reports/2026-11-18-imu-vs-optitrack-validation.md` (#125): on 159 paired
+  trials the sensor tracks the shank plate (RMSE median 3.9 deg, gain 1.00) and the app's angle
+  loses amplitude (gain 0.85) through its captured flexion axis.
+  `docs/reports/2026-11-18-optitrack-loader-fix.md`: before and after the fix (mirrored against
+  the August loader 55 to 3 of 145; gain 0.61 to 1.07).
+  `docs/reports/2026-11-18-pt-score-disagreement-diagnosis.md`: the PT-score disagreement of
+  #125 is mostly dropped frames distorting the OPTICAL score (verdict kappa 0.63 to 0.92 once
+  optical gaps are filled); #125's "PT score does not yet match" must be read with that.
 - **Reference (owner, 2026-11-18):** shank-plate rotation for tracking, refit knee angle for the
-  knee. The refit lives in `optitrack_loader_compare.py` / `imu_optitrack_validation.py` as
-  analysis code.
-- **Proposed, not started:** loader fix PR for `optitrack_knee_axis.hinge_axis`; app
-  flexion-axis capture; why A0, R2n and area ratio differ between curves that agree; whether
-  low-coverage takes are excluded (owner).
+  knee. Low-coverage takes stay in every figure, flagged, with a sensitivity row (owner,
+  2026-11-18).
+- **Stale:** every OptiTrack amplitude, polarity and PT score computed before the loader fix,
+  and every OptiTrack PT score computed from a curve with dropped frames.
+- **Proposed, not started:** app flexion-axis capture; the options in the diagnosis report.
 - **Entry points:** `batch_imu_vs_optitrack_rmse.py`, `rmse_pipeline_common.py`.
 - **Gaps:** the RMSE gate compares only the active swing window, so it could not see the seed bug;
   do not treat it as a sufficient gate for filter changes. The result "AHRS floor has zero effect on

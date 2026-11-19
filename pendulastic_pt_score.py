@@ -2177,6 +2177,14 @@ _KNEE_AXIS_WARNINGS = {
         "short by roughly cos(out-of-plane angle).",
     "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED":
         "Treat phi_max and R2n as minimum bounds for this trial.",
+    "low_marker_coverage":
+        "Both marker clusters were fully tracked on fewer than 60% of frames. "
+        "The curve is reported, not refused; check it against the IMU.",
+    "knee_curve_disagrees_with_plate":
+        "The knee curve does not follow the shank plate's own rotation "
+        "(correlation under 0.95). The two should differ only by thigh "
+        "movement, so this reconstruction has probably gone wrong on this "
+        "take. Do not use it as a reference without looking at it.",
 }
 
 
