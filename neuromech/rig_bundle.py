@@ -90,13 +90,15 @@ RECENTRED_LABEL = ("RE-CENTRED RENDER (1:1 size, constant offset) - the rig's ze
                    "Needs a player limit of 28 deg or more (the checklist's -MaxDeg 25 fallback refuses all three). The fast\n"
                    "part of the swing is at NEGATIVE rig angles: play a slow file that goes to -27 deg first if none has.\n"
                    "\n"
-                   "PHONE APP, KNOWN PROBLEM (simulated, not yet seen on the rig): the lift in these files is only 25-27 deg\n"
-                   "in 4 s, about 0.22 rad/s at its fastest (INDEX.csv lift_peak_rad_s), which is under the app's 0.3 rad/s\n"
-                   "stillness guard. In replay the app takes the first sync pulse as the release, then counts the lift as\n"
-                   "stillness and ENDS THE TRIAL (\"settled\") about when the lift ends, 3 s BEFORE the swing. A capture\n"
-                   "started before PLAY therefore does not contain the swing. The 1:1 lift (0.45 rad/s) does not do this;\n"
-                   "the x0.70 lift (0.315 rad/s) clears the guard by 5 percent. Until this is settled, start the phone\n"
-                   "capture during the 3 s hold after the lift and check the recording contains the swing.")
+                   "The lift is not the 1:1 lift scaled: the arm stays at 0 for about 2 s longer and then rises to the hold\n"
+                   "at the 1:1 lift's speed (INDEX.csv lift_peak_rad_s, 0.45), ending when the 1:1 lift ends. A 25-27 deg\n"
+                   "lift spread over the full 4 s would peak at 0.22 rad/s, under the phone app's 0.3 rad/s stillness guard,\n"
+                   "and in replay the app then ended the trial before the swing.\n"
+                   "\n"
+                   "PHONE APP, STILL OPEN (simulated, not yet seen on the rig): a capture started before PLAY now contains\n"
+                   "the swing, but the app takes the first sync pulse as the release, and its on-screen score for such a\n"
+                   "capture is wrong on these files and on library_x0.70 (about 0.41 in replay). Score the encoder log,\n"
+                   "or start the phone capture during the 3 s hold.")
 EXE_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <startup>
@@ -233,43 +235,69 @@ def scaled_render(t, sp, scale):
     return out
 
 
-def recentre_shape(n, fs=1000.0):
-    """0 through the sync pulses, the min-jerk lift from 0 to 1, then 1: what a constant offset of the hold and the
-    swing looks like in a file that must start at 0. The offset rides in on the lift, so nothing steps."""
+def lift_window(fs=1000.0):
+    """(first, end) sample index of motor_reference's lift; the hold starts at `end`, the swing PRE_ROLL_S later."""
     import motor_reference as mr
-    _, unit = mr.preamble(a0_deg=1.0, fs_hz=fs)
-    if n < len(unit):
+    n_pre = len(mr.preamble(a0_deg=1.0, fs_hz=fs)[1])
+    end = n_pre - int(round(mr.PRE_ROLL_S * fs))
+    return end - int(round(mr.RAMP_S * fs)), end
+
+
+def recentre_shape(n, fs=1000.0, a0=55.0, offset=28.0):
+    """What a constant offset of the hold and the swing looks like in a file that must start at 0: 0 through the
+    sync pulses and up to the lift, 1 from the end of the lift on. In between it is whatever turns the 1:1 lift
+    (0 to a0 over RAMP_S) into the RE-CENTRED LIFT: still at 0, then a min-jerk rise to a0 - offset that ends when
+    the 1:1 lift ends and is shortened in proportion (rounded up), so it peaks at the 1:1 lift's speed (0.45 rad/s). A lift
+    spread over the whole RAMP_S would peak at 0.22 rad/s, under the phone app's 0.3 rad/s stillness guard, and
+    the app would call the trial settled before the swing (contrarian review of PR #124, 2026-11-18)."""
+    import motor_reference as mr
+    i0, i1 = lift_window(fs)
+    if n < i1 + int(round(mr.PRE_ROLL_S * fs)):
         raise ValueError("the file is shorter than the motor_reference preamble")
     shape = np.ones(n)
-    shape[:len(unit)] = unit
-    shape[:sync_end_index(fs)] = 0.0
+    shape[:i0] = 0.0
+    hold = a0 - offset
+    m = i1 - i0 if abs(a0) < 1e-9 else int(np.clip(np.ceil((i1 - i0) * abs(hold) / abs(a0) - 1e-9), 1, i1 - i0))
+    late = np.zeros(i1 - i0)
+    late[-m:] = mr._min_jerk(1.0, m)
+    shape[i0:i1] = (a0 * mr._min_jerk(1.0, i1 - i0) - hold * late) / offset if abs(offset) > 1e-9 else 0.0
     return shape
 
 
 def recentre_offset(t, sp):
     """The whole-degree offset that centres the hold and the swing (everything after the lift) about 0."""
     fs = 1.0 / float(t[1] - t[0])
-    body = np.asarray(sp, float)[recentre_shape(len(sp), fs) == 1.0]
+    body = np.asarray(sp, float)[lift_window(fs)[1]:]
     return float(np.round(0.5 * (float(body.max()) + float(body.min()))))
 
 
 def recentred_render(t, sp, offset):
     """The file at full size with the hold and the swing shifted down by offset (deg): the lift ends at
-    a0 - offset. The 5 deg pulses and the zero start are unchanged, so alignment works as on any other file."""
+    a0 - offset, and is the shorter, later lift recentre_shape describes. The 5 deg pulses and the zero start are
+    unchanged, so the encoder aligns as on any other file."""
     fs = 1.0 / float(t[1] - t[0])
     i = sync_end_index(fs)
     if abs(float(sp[i - 1])) > 1e-9 or abs(float(sp[i])) > 1e-9:
         raise ValueError("the file is not at 0 after the sync pulses; not a motor_reference preamble")
-    return np.asarray(sp, float) - offset * recentre_shape(len(sp), fs)
+    sp = np.asarray(sp, float)
+    out = sp - offset * recentre_shape(len(sp), fs, float(sp[lift_window(fs)[1]]), offset)
+    out[np.abs(out) < 1e-9] = 0.0                      # the still part before the lift is exactly 0
+    return out
 
 
 def undo_recentre(t, rig_deg, offset):
     """A re-centred command, or what the encoder logged while it played (on the file's clock), back in the 1:1
     library's rig angle (0 = passive rest), for anything that needs the absolute angle. The scorer does not.
     rig_deg must start at the file's first sample and stop at its last: a log that is not cut to the file, or
-    that runs on into the player's end hold and return to 0, gets the offset in the wrong place."""
+    that runs on into the player's end hold and return to 0, gets the offset in the wrong place. The release
+    angle is read from the hold (its median plus offset); the lift itself comes back as the 1:1 lift exactly for
+    a command and only approximately for an encoder log."""
+    import motor_reference as mr
     fs = 1.0 / float(t[1] - t[0])
-    return np.asarray(rig_deg, float) + offset * recentre_shape(len(rig_deg), fs)
+    rig_deg = np.asarray(rig_deg, float)
+    i1 = lift_window(fs)[1]
+    a0 = float(np.median(rig_deg[i1:i1 + int(round(mr.PRE_ROLL_S * fs))])) + offset
+    return rig_deg + offset * recentre_shape(len(rig_deg), fs, a0, offset)
 
 
 def predicted_arm_speed(t, sp):
@@ -363,9 +391,9 @@ def export_recentred(out_lib, guard=None, sids=RECENTRED_SIDS):
         if ship:
             ilc.write_player(os.path.join(out_lib, name), t, rc)
         fs = 1.0 / float(t[1] - t[0])
-        shape = recentre_shape(len(rc), fs)
-        body = rc[shape == 1.0]
-        lift = rc[(shape > 0.0) & (shape < 1.0)]
+        i0, i1 = lift_window(fs)
+        body = rc[i1:]
+        lift = rc[i0:i1 + 1]
         rows.append(dict(file=name if ship else "", sid=r.sid, offset_deg=f"{off:.1f}", group=r.group, title=r.title,
                          duration_s=round(float(t[-1]), 1), hold_deg=round(float(body[0]), 1),
                          min_deg=round(float(body.min()), 1), peak_deg=round(float(np.max(np.abs(rc))), 1),
@@ -533,8 +561,8 @@ This file says what is here and what the limits are; the checklist says what to 
                             INDEX.csv) so the hold is near +27 deg and the bottom of the drop near -27.
                             THE RIG'S ZERO IS NOT THE LEG'S REST in these files: the arm ends the swing
                             below 0 and returns to 0 at the end. Label such trials "recentred".
-                            READ ITS README.txt BEFORE USING THE PHONE APP: a capture started before PLAY
-                            ends during the slow lift, before the swing (simulated; not yet seen on the rig).
+                            The lift in these files starts about 2 s later and is shorter (see its
+                            README.txt, which also says what the phone app does with a whole-file capture).
    bench_log.csv            the run sheet: one row per play, with the P, I, D and output range used
    logs\                    copy StretchExperiment's .bin logs here
    MANIFEST.txt             every file with its SHA256, the commit, and the guard status

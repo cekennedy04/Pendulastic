@@ -92,9 +92,11 @@ refused (no oscillation), which is the refusal path they probe.
   | `S-lam1.4_recentred.csv` | 28° | +27.0° / −27.1° | 27.6° | PT7 0.170, band 1 |
 
   34 of the 63 scenarios refused 1:1 would fit re-centred; only these three ship (`rig_bundle.RECENTRED_SIDS`).
-  **Open problem with the phone app (simulated):** the re-centred lift peaks at 0.22 rad/s, under the app's
-  0.3 rad/s stillness guard, so a capture started before PLAY is ended by the app when the lift ends, 3 s
-  before the swing. See "Second opinion" in the note and the folder's `README.txt`.
+  The re-centred lift starts about 2 s later than the 1:1 lift and rises at its speed (0.45 rad/s): spread
+  over the full 4 s it peaked at 0.22 rad/s, under the app's 0.3 rad/s stillness guard, and in replay the app
+  ended the trial before the swing. **Still open (simulated):** with a whole-file capture the app takes a
+  sync pulse as the release and its on-screen score is wrong on these and the x0.70 files. See "Second
+  opinion" in the note and the folder's `README.txt`.
   The Pendulum Designer reaches this axis through its *Severity axis (De Groote), lambda* mode
   (`designer/DeGroote.cs`, a port of `model_rt` held to it by `tests/test_designer.py`).
 - **Rig bearing friction alone sits just under MAS 1 (2026-11-17, scorer `pt5trough-ref-2026-11-16`, core

@@ -177,6 +177,10 @@ def test_recentred_render_keeps_the_pulses_and_shifts_the_hold_and_swing_by_a_co
     assert np.allclose(out[lift_end:], sp[lift_end:] - 28.0, atol=1e-12)                        # a constant after the lift
     assert out[n_pre - 1] == pytest.approx(27.0)                                                # the hold: 55 - 28
     assert np.abs(np.diff(out)[i:]).max() <= np.abs(np.diff(sp)[i:]).max() + 1e-9               # the offset adds no step
+    i0, i1 = RB.lift_window()
+    assert (i0, i1) == (lift_end - int(mr.RAMP_S * 1000), lift_end)
+    m = int(round((i1 - i0) * 27.0 / 55.0))
+    assert np.all(out[i:i1 - m + 1] == 0) and np.all(np.diff(out[i1 - m:i1 + 1]) >= -1e-9)         # still, then one rise
     assert np.allclose(RB.undo_recentre(t, out, 28.0), sp, atol=1e-12)
     with pytest.raises(ValueError):
         RB.recentred_render(*_file(np.r_[0, np.full(12000, 10.0)]), 28.0)
@@ -199,11 +203,14 @@ def test_recentred_severity_axis_passes_the_unchanged_guard_and_scores_the_1_to_
     assert RB.guard_verdict(fn, t, rc, info) is None and info["predicted_peak_deg"] < 30.0
     assert G.HARD_LIMIT_DEG == 40.0 and RB.LIMIT_DEG == 40.0                                    # the guard is the same guard
     fs = 1.0 / float(t[1] - t[0])
-    body = rc[RB.recentre_shape(len(rc), fs) == 1.0]
-    # the lift is 25-27 deg in 4 s: UNDER the app's 0.3 rad/s stillness guard (stillness.rs), where the 1:1 lift is
-    # not. Known problem, in the folder's README and the results note; this holds the number they quote.
-    lift = (RB.recentre_shape(len(rc), fs) > 0) & (RB.recentre_shape(len(rc), fs) < 1)
-    assert 0.20 < np.radians(np.abs(np.diff(rc[lift])).max() * fs) < 0.23 < 0.3 < np.radians(np.abs(np.diff(sp[lift])).max() * fs)
+    i0, i1 = RB.lift_window(fs)
+    body = rc[i1:]
+    # the lift rises at the 1:1 lift's speed, clear of the app's 0.3 rad/s stillness guard (stillness.rs); spread
+    # over the whole 4 s it would peak at 0.22 rad/s and the app would settle before the swing (results note).
+    speed = lambda x: np.radians(np.abs(np.diff(x[i0:i1 + 1])).max() * fs)
+    assert 0.44 < speed(rc) <= speed(sp) * 1.001 and speed(sp) < 0.46
+    still = int(round((i1 - i0) * (1 - body[0] / sp[i1])))
+    assert 1900 < still < 2300 and np.all(rc[i0:i0 + still - 1] == 0)                            # < 5 s still before it
     assert abs(body.max() + body.min()) <= 1.0 and 24.0 < body.max() < 28.0                     # centred, about +/-27
     assert est["interpretable"] and est["mas"] == "1"
     for trace in (rc, RB.undo_recentre(t, rc, offset), sp):
@@ -245,5 +252,5 @@ def test_export_recentred_ships_only_the_owners_three_and_lists_what_else_would_
     assert by["A-P1p"]["fits_recentred"] == "yes" and "not shipped" in by["A-P1p"]["included"]
     label = open(tmp_path / RB.RECENTRED_DIR / "README.txt").read()
     assert "RE-CENTRED RENDER" in label and "offset_deg" in label and all(ord(c) < 128 for c in label)
-    assert "KNOWN PROBLEM" in label and "28 deg or more" in label
-    assert all(0.20 < float(by[s]["lift_peak_rad_s"]) < 0.23 for s in RB.RECENTRED_SIDS)
+    assert "STILL OPEN" in label and "28 deg or more" in label
+    assert all(0.44 < float(by[s]["lift_peak_rad_s"]) < 0.46 for s in RB.RECENTRED_SIDS)

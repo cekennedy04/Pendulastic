@@ -26,10 +26,12 @@ scores move. "Not verified" is stated, never implied.
 2. **Whether to ship more re-centred files** (2026-11-18). The owner chose to re-centre the
    lambda 1.0, 1.2 and 1.4 swings (see workstream 1). 31 more scenarios that are refused at 1:1 would
    pass the guard re-centred; they are listed in `library_recentred/INDEX.csv` and not shipped.
-3. **Re-centred files end the phone app's trial before the swing** (2026-11-18, simulated, from the
-   contrarian review of PR #124). Their lift peaks at 0.22 rad/s, under the app's 0.3 rad/s stillness
-   guard, so a capture started before PLAY settles when the lift ends. Options: start the capture in
-   the hold, a faster lift for these files (changes the preamble), or change the app's settle rule.
+3. **The app's score from a whole-file capture** (2026-11-19, simulated, from the contrarian review of
+   PR #124). The app takes the first sync pulse as the release; its on-screen score is then right on a
+   1:1 file and wrong on x0.70 and re-centred files (about 0.41). The earlier problem, the app ending
+   the trial before the swing on re-centred files, was fixed in the render (their lift now rises at the
+   1:1 lift's speed, 0.45 rad/s, instead of 0.22). Whether the phone capture should start before PLAY
+   or in the hold, and whether the app should ignore the pulses, is open.
    `docs/reports/2026-11-18-neuromech-lambda-1p4.md`, "Second opinion".
 
 ## Decisions taken (owner, 2026-11-16)

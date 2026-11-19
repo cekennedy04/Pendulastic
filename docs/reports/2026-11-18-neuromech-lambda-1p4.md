@@ -28,9 +28,11 @@ on is on the falling branch: a stiffer leg, graded milder.
   agrees with the reference to 0.003 PT. **This does not transfer to the rig as stated:** the arm the guard
   models overshoots the early catch (55 → 73°/s), so on the predicted arm motion the app does find the
   release at 1:1 and scores 0.14 to 0.18 depending on the plant. See "Second opinion" below.
-- **Re-centred files and the phone app: a capture started before PLAY ends before the swing** (simulated).
-  The re-centred lift peaks at 0.22 rad/s, under the app's 0.3 rad/s stillness guard, so the app settles when
-  the lift ends. Open; see "Second opinion".
+- **Re-centred files and the phone app** (simulated). A 27° lift spread over the 1:1 lift's 4 s peaks at
+  0.22 rad/s, under the app's 0.3 rad/s stillness guard, and the app ended the trial before the swing. Fixed
+  in the render on 2026-11-19: the re-centred lift starts about 2 s later and rises at the 1:1 lift's speed.
+  The app's own score from a whole-file capture is still wrong (it takes a sync pulse as the release). See
+  "Second opinion".
 
 ## What limited lambda before this change
 
@@ -118,8 +120,8 @@ the owner chose **re-centre the swing**.
 
 The 1:1 swing at lambda 1.4 spans +55° to +0.9° of rig angle and never goes below zero, so it is 54° wide and
 only its position is the problem. `rig_bundle.recentred_render` subtracts a constant from the hold and the
-swing; the offset comes in along the min-jerk lift, so the file still starts at 0, nothing steps, and the three
-5° sync pulses are untouched. The offset is the whole degree that centres the hold and swing about 0, per file.
+swing; the offset comes in during the lift, so the file still starts at 0, nothing steps, and the three
+5° sync pulses are untouched. The lift itself is shorter and later than the 1:1 lift (see "Second opinion", 1). The offset is the whole degree that centres the hold and swing about 0, per file.
 
 | file (`library_recentred/`) | offset | hold | lowest | predicted delivered peak | guard at ±40° | score re-centred | 1:1 expected |
 |---|---|---|---|---|---|---|---|
@@ -160,24 +162,36 @@ the C# port and this note. Everything in this section is simulation: the synthet
 app's wasm build, with the arm motion from the guard's identified plant (`rig_guard.sim_response`). Both
 experiments were re-run here and reproduced.
 
-**1. A re-centred file can end the app's trial before the swing (open).** Replaying the WHOLE rig file for
+**1. A re-centred file could end the app's trial before the swing (fixed in the render, 2026-11-19).** Replaying the WHOLE rig file for
 lambda 1.4 (pulses, lift, hold, swing; capture started 3 s before the file) through the app:
 
 | file | app "released" (file time) | app "settled" (file time) | app result |
 |---|---|---|---|
 | 1:1 | 0.22 s (first sync pulse) | 18.1 s, after the swing | PT 0.175, A0 35.0° (reference 0.170) |
 | x0.70 | 0.22 s | 17.6 s | PT 0.410, A0 13.4° |
-| re-centred | 0.22 s | **6.3 s** (lift ends 6.19 s, true release 9.19 s) | PT 0.957, A0 26.0°, from the pulses and lift only |
+| re-centred, lift over the full 4 s (as first pushed) | 0.22 s | **6.3 s** (lift ends 6.19 s, true release 9.19 s) | PT 0.957, A0 26.0°, from the pulses and lift only |
+| re-centred, later lift at the 1:1 speed (now) | 0.22 s | 18.1 s, after the swing | PT 0.417, A0 9.0° |
 
 The app takes the first 5° pulse as the release on every library file (existing behaviour). It then needs 5 s
 below 0.3 rad/s to call the trial settled (`ZERO_CAPTURE_GUARD_RAD_S`, `session.rs` `advance_settle`). The 1:1
 lift peaks at 0.45 rad/s and resets that count; the re-centred lift is 27° in the same 4 s, 0.22 rad/s, and
 does not; the x0.70 lift (0.315 rad/s) clears it by 5%. So the statement above that "alignment works as on any
-other file" holds for the encoder and the command, not for the phone app. Not changed here, because every fix
-is a decision: start the capture in the hold (loses the pulses in the phone record), give the re-centred files
-a faster lift (changes the preamble that `match_trials` and the Designer assume), or change the app's settle
-rule (the app session's area). The folder's `README.txt` and `START_HERE.txt` carry the warning, and
-`INDEX.csv` has the lift speed (`lift_peak_rad_s`).
+other file" held for the encoder and the command, not for the phone app.
+
+The owner said to proceed with what seemed best, and the render was changed (2026-11-19): in a re-centred file
+the arm stays at 0 for about 2 s longer and then rises to the hold on a min-jerk profile shortened in
+proportion (27/55 of 4 s), so it peaks at the 1:1 lift's 0.45 rad/s and ends at the same sample. The preamble
+length, the hold, the release time and the swing are unchanged, so `match_trials`, the Designer's *Open file*
+and the score are unaffected (the tests above still pass); the guard passes with the same predicted peaks
+(25.2°, 27.6°, 27.6°); the still time between the last pulse and the lift is 3.3 s, under the app's 5 s.
+With it the app settles after the swing, as on the 1:1 file. `INDEX.csv` has the lift speed
+(`lift_peak_rad_s`).
+
+**Still open, and the app's:** with a whole-file capture the app takes the first sync pulse as the release.
+Its on-screen score is then right for the 1:1 file (0.175) and wrong for the x0.70 and re-centred files
+(0.41, A0 9° to 13°). The recording now contains the swing, so the encoder log or an offline rescoring can
+grade it; the live score from such a capture cannot be trusted on those files. That is in the app's release
+logic, which another session has, and the folder's `README.txt` says so.
 
 **2. "The app never finds the release at lambda 1.4" is a property of the ideal trace.** The plant amplifies
 the early catch: pre-catch peak speed commanded → predicted delivered is 88 → 103°/s at lambda 1.0, 66 → 87 at
