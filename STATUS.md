@@ -351,9 +351,12 @@ scores move. "Not verified" is stated, never implied.
   the 145 tracked paired trials: axis error median 21.1 to 10.9 deg, gain 0.85 to 0.93, RMSE
   median 8.7 to 4.8 deg (p90 22.3 to 9.9). It moves every app angle: A0 by a median +2.1 deg,
   13 of 144 PT scores by more than 0.1, 8 of 132 verdicts; one trial that scored no longer
-  does. The fit closes after one second under 1 rad/s (once it has 50 qualifying samples),
-  added after testing what a recording that runs on does to the axis; that stop is an addition
-  to the option the owner approved.
+  does. The fit closes after one second under 1 rad/s, added after testing what a recording
+  that runs on does to the axis; that stop is an addition to the option the owner approved. A
+  fit with fewer than 25 fast samples when that second arrives stays open but takes no more
+  than 25 in total (what the old rule took), and closes after two seconds of quiet (pre-merge
+  review fix, 2026-11-19: with no close below 50 samples a weak swing followed by handling
+  gave an axis up to 90 deg off).
   The live trace, the desktop server and every tool that replays with the local
   `imu_calibration_config.json` or a hard-coded config still use the old rule.
   `lateral_motion` still measures against the old axis. Trends break at the footing change.

@@ -356,13 +356,15 @@ def test_the_phone_replays_on_the_reference_footing():
     import imu_flex_axis as fa
     flex_rs = open(os.path.join(core, "flex_axis.rs"), encoding="utf-8").read()
     for name, value in (("QUIET_STOP_S", fa.QUIET_STOP_S), ("DEFAULT_THRESHOLD", fa.DEFAULT_THRESHOLD),
+                        ("QUIET_STOP_WEAK_S", fa.QUIET_STOP_WEAK_S),
                         ("MAX_GRAVITY_TILT_COS", fa.MAX_GRAVITY_TILT_COS)):
         m = re.search(rf"pub const {name}: f64 = ([0-9.]+);", flex_rs)
         assert m and float(m.group(1)) == value, name
-    for name, value in (("MIN_COMMIT_SAMPLES", fa.MIN_COMMIT_SAMPLES),
-                        ("QUIET_STOP_MIN_SAMPLES", fa.QUIET_STOP_MIN_SAMPLES)):
-        m = re.search(rf"pub const {name}: usize = (\d+);", flex_rs)
-        assert m and int(m.group(1)) == value, name
+    m = re.search(r"pub const MIN_COMMIT_SAMPLES: usize = (\d+);", flex_rs)
+    assert m and int(m.group(1)) == fa.MIN_COMMIT_SAMPLES
+    # Both sides tie the weak-fit cap to the opening rule's count.
+    assert "pub const QUIET_STOP_MIN_SAMPLES: usize = MIN_COMMIT_SAMPLES;" in flex_rs
+    assert fa.QUIET_STOP_MIN_SAMPLES == fa.MIN_COMMIT_SAMPLES
 
 
 def test_the_selectable_superset_matches_between_languages():

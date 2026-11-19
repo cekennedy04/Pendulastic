@@ -363,7 +363,8 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
                 // integrated. The estimator ignores sub-threshold samples, and
                 // under `FlexAxisFit::Opening` stops once committed, so it is
                 // fed unconditionally after the zero; under
-                // `FlexAxisFit::Recording` it takes every sample to the end. Under a release override the feed starts at the
+                // `FlexAxisFit::Recording` it takes every sample until the
+                // fit closes. Under a release override the feed starts at the
                 // override's sample, because the axis belongs to the swing the
                 // zero pose starts; the reference has no override to compare.
                 //

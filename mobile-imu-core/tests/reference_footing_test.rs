@@ -116,6 +116,53 @@ fn handling_after_a_quiet_spell_does_not_reach_the_axis() {
     assert!(ax[0].abs() > 0.999, "axis followed the handling: {ax:?}");
 }
 
+/// Degrees between the fitted axis and sensor x, which every fixture below
+/// swings about.
+fn off_x(l: &[RawSample], cfg: &ReplayConfig) -> f64 {
+    replay(l, cfg).unwrap().flex_axis.unwrap()[0].abs().min(1.0).acos().to_degrees()
+}
+
+/// Pre-merge review, 2026-11-19 (F1). A fit with few fast samples used to stay
+/// open to the end of the recording, so 49 samples of swing followed by
+/// handling gave an axis 90 degrees off. Each count either side of
+/// QUIET_STOP_MIN_SAMPLES is pinned against the Python reference, and none may
+/// do worse than the opening rule does on the same log.
+#[test]
+fn few_fast_samples_then_handling_does_not_take_the_axis() {
+    macro_rules! case {
+        ($tag:literal, $t:ident, $ts:ident, $a:ident, $g:ident, $wt:ident, $w:ident) => {{
+            check($tag, golden::$t, golden::$ts, golden::$a, golden::$g, golden::$wt, golden::$w);
+            let l = log(golden::$t, golden::$ts, golden::$a, golden::$g);
+            let (rec, old) = (off_x(&l, &ReplayConfig::reference()), off_x(&l, &opening()));
+            assert!(rec < 5.0, "{}: whole-recording axis {rec} deg off the swing", $tag);
+            assert!(rec <= old + 1.0, "{}: recording {rec} deg, opening {old} deg", $tag);
+        }};
+    }
+    case!("REF_CLIFF24", REF_CLIFF24_RAW_T, REF_CLIFF24_RAW_TS_MS, REF_CLIFF24_RAW_ACCEL,
+          REF_CLIFF24_RAW_GYRO, REF_CLIFF24_T, REF_CLIFF24_ANG);
+    case!("REF_CLIFF25", REF_CLIFF25_RAW_T, REF_CLIFF25_RAW_TS_MS, REF_CLIFF25_RAW_ACCEL,
+          REF_CLIFF25_RAW_GYRO, REF_CLIFF25_T, REF_CLIFF25_ANG);
+    case!("REF_CLIFF49", REF_CLIFF49_RAW_T, REF_CLIFF49_RAW_TS_MS, REF_CLIFF49_RAW_ACCEL,
+          REF_CLIFF49_RAW_GYRO, REF_CLIFF49_T, REF_CLIFF49_ANG);
+    case!("REF_WEAKBUMP", REF_WEAKBUMP_RAW_T, REF_WEAKBUMP_RAW_TS_MS, REF_WEAKBUMP_RAW_ACCEL,
+          REF_WEAKBUMP_RAW_GYRO, REF_WEAKBUMP_T, REF_WEAKBUMP_ANG);
+}
+
+/// The same bump three seconds after a weaker swing: QUIET_STOP_WEAK_S has
+/// closed the fit, which the opening rule (still short of 25 samples) cannot
+/// do, so here the whole-recording fit must beat it.
+#[test]
+fn a_bump_long_after_a_weak_swing_is_kept_out_entirely() {
+    check("REF_WEAKLATE", golden::REF_WEAKLATE_RAW_T, golden::REF_WEAKLATE_RAW_TS_MS,
+          golden::REF_WEAKLATE_RAW_ACCEL, golden::REF_WEAKLATE_RAW_GYRO,
+          golden::REF_WEAKLATE_T, golden::REF_WEAKLATE_ANG);
+    let l = log(golden::REF_WEAKLATE_RAW_T, golden::REF_WEAKLATE_RAW_TS_MS,
+                golden::REF_WEAKLATE_RAW_ACCEL, golden::REF_WEAKLATE_RAW_GYRO);
+    let (rec, old) = (off_x(&l, &ReplayConfig::reference()), off_x(&l, &opening()));
+    assert!(rec < 1.0, "whole-recording axis {rec} deg off the swing");
+    assert!(old > 45.0, "the opening rule was expected to be taken by the bump, got {old} deg");
+}
+
 #[test]
 fn a_swing_with_few_qualifying_samples_matches_the_reference_replay() {
     check("REF_NOCOMMIT", golden::REF_NOCOMMIT_RAW_T, golden::REF_NOCOMMIT_RAW_TS_MS,

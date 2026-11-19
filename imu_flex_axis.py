@@ -47,7 +47,8 @@ Scored replay (2026-11-19)
 A replay is not live: it has the whole recording. On the reference footing
 (imu_calibration_config.REFERENCE_REPLAY_CONFIG, "flex_axis_fit": "recording")
 replay_trial uses FlexAxisEstimator.whole_recording(), which accumulates the
-same second moment over the whole swing, closes after QUIET_STOP_S of quiet,
+same second moment over the whole swing, closes after QUIET_STOP_S of quiet
+(a fit with few fast samples is handled as QUIET_STOP_MIN_SAMPLES describes),
 and does not level the result. The live server, and any replay whose config
 does not name a fit, keep the 25-sample levelled rule described above, so live
 and replay now differ on purpose on that footing.
@@ -99,26 +100,49 @@ MAX_GRAVITY_TILT_COS = 0.5      # 0.5 => 30 deg off horizontal
 # reversal (a half period is about 0.5 s), so one second of quiet means the
 # swing is over, and whatever moves the phone after that is not the swing: the
 # leg being lifted back, the phone being unstrapped. Tested 2026-11-19 by
-# appending such motion to 46 corpus recordings: without the stop, 2.5 s of
-# tumbling moved the axis by more than 10 deg on 28 of them; with it, on 1
-# (and that one also differs by 12.7 deg with nothing appended, because it has
-# real motion after a quiet second). It does nothing for a leg caught while it
-# is still swinging -- no axis rule does, and the score is wrong on every rule.
+# appending such motion to corpus recordings: without the stop, 2.5 s of
+# tumbling moved the axis by more than 10 deg on 39 of 63; with it, on none.
+# (One recording's axis differs by 12.7 deg from the no-stop axis with nothing
+# appended, because it has real motion after a quiet second.) It does nothing
+# for a leg caught while it is still swinging -- no axis rule does, and the
+# score is wrong on every rule.
 #
 # The quiet clock is the sum of the gyro sample intervals the filter integrates
 # (the caller's dt), so a sample with a missing or implausible timestamp counts
 # as the nominal 10 ms.
 QUIET_STOP_S = 1.0
 
-# ...but not before the fit has this many qualifying samples. A leg that is
-# caught a moment after release, held for more than a second and then swings
-# on would otherwise close the fit on the let-go transient alone (independent
-# review, 2026-11-19: 24 deg axis error on a synthetic catch of 1.1 s, against
-# 7 deg with no stop and 15 deg on the opening rule). Until the fit has half a
-# second of fast motion at 100 Hz, quiet does not close it and the swing that
-# follows the catch is taken in. The cost: a recording with fewer qualifying
-# samples than this in total is not protected from later handling.
-QUIET_STOP_MIN_SAMPLES = 50
+# A fit with fewer qualifying samples than this when the quiet second arrives
+# is treated differently, because two recordings look the same up to that
+# point and want opposite things:
+#
+#   * a leg caught a moment after release, held, then swinging on: the fit so
+#     far is the let-go transient and the swing is still to come (independent
+#     review, 2026-11-19: closing on the transient alone gave 24 deg of axis
+#     error on a synthetic 1.1 s catch);
+#   * a weak swing that is already over, then the leg or the phone is touched:
+#     the fit so far is the swing and what comes next must be kept out
+#     (pre-merge review, 2026-11-19: with no close below 50 samples, 2 rad/s
+#     for 49 samples followed 1.5 s later by handling gave an axis 90 deg off).
+#
+# No count or time separates them, so below this count the fit falls back to
+# what the opening rule does: it stays open, but takes no more than this many
+# samples in total (QUIET_STOP_MIN_SAMPLES is the opening rule's 25). Late
+# motion can then contribute at most as many samples as it could under the
+# opening rule, and a swing that follows a catch still gets in up to the same
+# count. Measured on the two synthetic cases: weak swing of 22 samples plus a
+# bump 1.3 s later, 1.4 deg (opening rule 1.3, no cap 89); catch of 1.1 s then
+# swing, 15.2 deg (opening rule 14.5, closing on the transient 23.7, no cap
+# 6.6). So the cap gives up the better answer on the catch to be no worse than
+# the opening rule on the weak swing.
+QUIET_STOP_MIN_SAMPLES = MIN_COMMIT_SAMPLES
+
+# ...and a fit below that count closes anyway once the quiet has lasted this
+# long. The app stops recording after 5 s of stillness, so a touch can arrive
+# up to 5 s after a weak swing has died; past 2 s it is kept out entirely,
+# which the opening rule does not do. The cost is a catch held longer than
+# this: the fit is then the transient alone.
+QUIET_STOP_WEAK_S = 2.0
 
 
 class FlexAxisEstimator:
@@ -128,7 +152,7 @@ class FlexAxisEstimator:
 
     __slots__ = ("_threshold", "_min_samples", "_m", "_n", "_axis",
                  "_committed", "_first", "_gravity", "_leveled", "_level",
-                 "_quiet_stop", "_quiet", "_closed")
+                 "_quiet_stop", "_quiet", "_closed", "_capped")
 
     def __init__(self, threshold: float = DEFAULT_THRESHOLD,
                  min_samples: Optional[int] = MIN_COMMIT_SAMPLES,
@@ -141,6 +165,7 @@ class FlexAxisEstimator:
         self._quiet_stop: Optional[float] = None
         self._quiet = 0.0
         self._closed = False
+        self._capped = False
         self._m = np.zeros((3, 3), dtype=float)
         self._n = 0
         self._axis: Optional[np.ndarray] = None
@@ -186,12 +211,12 @@ class FlexAxisEstimator:
 
     def quiet(self, dt) -> None:
         """Report `dt` seconds spent under the threshold. Only a
-        whole-recording fit that already has QUIET_STOP_MIN_SAMPLES qualifying
-        samples counts it; the fit closes when the quiet since the last
-        qualifying sample reaches QUIET_STOP_S."""
+        whole-recording fit that has a qualifying sample counts it. When the
+        quiet since the last qualifying sample reaches QUIET_STOP_S the fit
+        closes if it has QUIET_STOP_MIN_SAMPLES samples; with fewer it stays
+        open but will take no more than that many in total, and closes
+        outright if the quiet reaches QUIET_STOP_WEAK_S."""
         if self._quiet_stop is None or self._n == 0 or self._closed:
-            return
-        if self._n < QUIET_STOP_MIN_SAMPLES:
             return
         try:
             dt = float(dt)
@@ -200,8 +225,12 @@ class FlexAxisEstimator:
         if not (np.isfinite(dt) and dt > 0.0):
             return
         self._quiet += dt
-        if self._quiet >= self._quiet_stop:
+        if self._quiet < self._quiet_stop:
+            return
+        if self._n >= QUIET_STOP_MIN_SAMPLES or self._quiet >= QUIET_STOP_WEAK_S:
             self._closed = True
+        else:
+            self._capped = True
 
     @property
     def axis(self) -> Optional[np.ndarray]:
@@ -256,6 +285,8 @@ class FlexAxisEstimator:
         self._m += np.outer(v, v)
         self._n += 1
         self._quiet = 0.0
+        if self._capped and self._n >= QUIET_STOP_MIN_SAMPLES:
+            self._closed = True
         if self._min_samples is not None and self._n >= self._min_samples:
             self._commit()
 
@@ -309,6 +340,7 @@ class FlexAxisEstimator:
         self._leveled = False
         self._quiet = 0.0
         self._closed = False
+        self._capped = False
 
 
 def principal_axis(vectors, threshold: float = DEFAULT_THRESHOLD) -> Optional[np.ndarray]:

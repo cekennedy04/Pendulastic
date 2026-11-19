@@ -78,11 +78,19 @@ pub const MAX_GRAVITY_TILT_COS: f64 = 0.5;
 /// the nominal 10 ms.
 pub const QUIET_STOP_S: f64 = 1.0;
 
-/// Quiet does not close a whole-recording fit that has fewer qualifying
-/// samples than this: a leg caught a moment after release, held for over a
-/// second and then swinging on would otherwise be fitted on the let-go
-/// transient alone. Mirrors `QUIET_STOP_MIN_SAMPLES` in `imu_flex_axis.py`.
-pub const QUIET_STOP_MIN_SAMPLES: usize = 50;
+/// A whole-recording fit with fewer qualifying samples than this when the
+/// quiet second arrives does not close: it may be a let-go transient with the
+/// swing still to come (a leg caught just after release). But it may equally
+/// be a weak swing that is over, so from then on it takes no more than this
+/// many samples in total, which is what the opening rule would have taken.
+/// Late handling can then get in no further than it could under the opening
+/// rule. Mirrors `QUIET_STOP_MIN_SAMPLES` in `imu_flex_axis.py`, where the two
+/// cases and their measured results are described.
+pub const QUIET_STOP_MIN_SAMPLES: usize = MIN_COMMIT_SAMPLES;
+
+/// ...and a fit below that count closes anyway once the quiet has lasted this
+/// long. Mirrors `QUIET_STOP_WEAK_S` in `imu_flex_axis.py`.
+pub const QUIET_STOP_WEAK_S: f64 = 2.0;
 
 /// Online principal-axis estimator. Feed it raw gyro vectors via
 /// [`FlexAxisEstimator::update`]; read [`FlexAxisEstimator::axis`] for the
@@ -107,6 +115,9 @@ pub struct FlexAxisEstimator {
     quiet_stop: Option<f64>,
     quiet: f64,
     closed: bool,
+    /// Set when a quiet second found the fit under
+    /// [`QUIET_STOP_MIN_SAMPLES`]: it then closes on reaching that count.
+    capped: bool,
 }
 
 impl Default for FlexAxisEstimator {
@@ -139,6 +150,7 @@ impl FlexAxisEstimator {
             quiet_stop: None,
             quiet: 0.0,
             closed: false,
+            capped: false,
         }
     }
 
@@ -164,17 +176,24 @@ impl FlexAxisEstimator {
     }
 
     /// Report `dt` seconds spent under the threshold. Only a whole-recording
-    /// fit that already has [`QUIET_STOP_MIN_SAMPLES`] qualifying samples
-    /// counts it; the fit closes when the quiet since the last qualifying
-    /// sample reaches [`QUIET_STOP_S`].
+    /// fit that has a qualifying sample counts it. When the quiet since the
+    /// last qualifying sample reaches [`QUIET_STOP_S`] the fit closes if it
+    /// has [`QUIET_STOP_MIN_SAMPLES`] samples; with fewer it stays open but
+    /// will take no more than that many in total, and closes outright if the
+    /// quiet reaches [`QUIET_STOP_WEAK_S`].
     pub fn quiet(&mut self, dt: f64) {
         let Some(limit) = self.quiet_stop else { return };
-        if self.n < QUIET_STOP_MIN_SAMPLES || self.closed || !(dt.is_finite() && dt > 0.0) {
+        if self.n == 0 || self.closed || !(dt.is_finite() && dt > 0.0) {
             return;
         }
         self.quiet += dt;
-        if self.quiet >= limit {
+        if self.quiet < limit {
+            return;
+        }
+        if self.n >= QUIET_STOP_MIN_SAMPLES || self.quiet >= QUIET_STOP_WEAK_S {
             self.closed = true;
+        } else {
+            self.capped = true;
         }
     }
 
@@ -256,6 +275,9 @@ impl FlexAxisEstimator {
         }
         self.n += 1;
         self.quiet = 0.0;
+        if self.capped && self.n >= QUIET_STOP_MIN_SAMPLES {
+            self.closed = true;
+        }
         if self.n >= self.min_samples {
             self.commit();
         }
@@ -316,6 +338,7 @@ impl FlexAxisEstimator {
         self.leveled = false;
         self.quiet = 0.0;
         self.closed = false;
+        self.capped = false;
     }
 }
 
@@ -813,12 +836,9 @@ mod whole_recording_tests {
     fn a_second_of_quiet_closes_the_fit_and_less_does_not() {
         let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
         e.quiet(5.0); // before any sample: not counted
-        for _ in 0..QUIET_STOP_MIN_SAMPLES - 1 {
+        for _ in 0..QUIET_STOP_MIN_SAMPLES {
             e.update([2.0, 0.0, 0.0], None);
         }
-        e.quiet(5.0); // one sample short of the minimum: still not counted
-        assert!(!e.closed());
-        e.update([2.0, 0.0, 0.0], None);
         for _ in 0..99 {
             e.quiet(0.01);
         }
@@ -837,6 +857,74 @@ mod whole_recording_tests {
         assert_eq!(e.n_samples(), n);
         e.finalize();
         assert!(e.axis().unwrap()[0].abs() > 0.999);
+    }
+
+    /// Pre-merge review 2026-11-19 (F1): under the minimum the fit used to
+    /// stay open to the end of the recording, so late handling took the axis.
+    #[test]
+    fn a_weak_fit_takes_no_more_than_the_opening_rule_after_a_quiet_second() {
+        for n in [1usize, 10, 24] {
+            let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+            for _ in 0..n {
+                e.update([2.0, 0.0, 0.0], None);
+            }
+            for _ in 0..150 {
+                e.quiet(0.01); // 1.5 s: past QUIET_STOP_S, short of QUIET_STOP_WEAK_S
+            }
+            assert!(!e.closed(), "n={n}");
+            for _ in 0..200 {
+                e.update([0.0, 4.0, 0.0], None);
+            }
+            assert!(e.closed(), "n={n}");
+            assert_eq!(e.n_samples(), QUIET_STOP_MIN_SAMPLES, "n={n}");
+        }
+        // At the minimum the quiet second closes it outright.
+        let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+        for _ in 0..QUIET_STOP_MIN_SAMPLES {
+            e.update([2.0, 0.0, 0.0], None);
+        }
+        for _ in 0..150 {
+            e.quiet(0.01);
+        }
+        assert!(e.closed());
+        e.update([0.0, 4.0, 0.0], None);
+        e.finalize();
+        assert!(e.axis().unwrap()[0].abs() > 0.999);
+    }
+
+    #[test]
+    fn a_weak_fit_closes_after_the_longer_quiet() {
+        let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+        for _ in 0..10 {
+            e.update([2.0, 0.0, 0.0], None);
+        }
+        for _ in 0..199 {
+            e.quiet(0.01);
+        }
+        assert!(!e.closed());
+        e.quiet(0.02);
+        assert!(e.closed());
+        e.update([0.0, 4.0, 0.0], None);
+        e.finalize();
+        assert_eq!(e.n_samples(), 10);
+        assert!(e.axis().unwrap()[0].abs() > 0.999);
+    }
+
+    /// A quiet shorter than QUIET_STOP_S never caps: the reversals of a slow
+    /// swing must not limit the fit.
+    #[test]
+    fn short_quiets_do_not_cap_a_weak_fit() {
+        let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+        for _ in 0..20 {
+            for _ in 0..3 {
+                e.update([2.0, 0.0, 0.0], None);
+            }
+            for _ in 0..90 {
+                e.quiet(0.01);
+            }
+        }
+        assert!(!e.closed());
+        assert_eq!(e.n_samples(), 60);
     }
 
     #[test]

@@ -702,6 +702,18 @@ def main():
     #                   handled: a burst about another axis that starts more
     #                   than QUIET_STOP_S after the last sample at 1 rad/s. The
     #                   whole-recording fit has closed by then and ignores it.
+    #   REF_CLIFF24 / 25 / 49 -- 2 rad/s about x for that many samples, 1.5 s of
+    #                   quiet, then a second of handling about y peaking at
+    #                   4 rad/s (pre-merge review, 2026-11-19: with no close
+    #                   below 50 samples the axis came out 90 deg off at 49).
+    #                   At 25 and 49 the quiet second closes the fit; at 24 it
+    #                   is capped at QUIET_STOP_MIN_SAMPLES and takes one
+    #                   sample of the handling.
+    #   REF_WEAKBUMP -- a weak swing (fewer than QUIET_STOP_MIN_SAMPLES fast
+    #                   samples), then a 0.4 s out-and-back bump about y 1.3 s
+    #                   after it died: the capped case on a real-shaped swing.
+    #   REF_WEAKLATE -- a weaker swing and the same bump 3 s after it died:
+    #                   QUIET_STOP_WEAK_S has closed the fit by then.
     from imu_calibration_tuner import ANALYSIS_TICK_S as _ATICK
     from imu_flex_axis import MIN_COMMIT_SAMPLES as _MIN_COMMIT
     ref_params = {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True,
@@ -714,7 +726,8 @@ def main():
         return (v * math.cos(ang) + np.cross(k, v) * math.sin(ang)
                 + k * float(np.dot(k, v)) * (1.0 - math.cos(ang)))
 
-    def _ref_log(axis, a0_deg, f_hz, tau, total_s, hold_s=2.0, fs=100.0, burst=None, late=None):
+    def _ref_log(axis, a0_deg, f_hz, tau, total_s, hold_s=2.0, fs=100.0, burst=None, late=None,
+                 cliff=None):
         k = np.asarray(axis, dtype=float)
         k = k / np.linalg.norm(k)
         a, w = math.radians(a0_deg), 2.0 * math.pi * f_hz
@@ -724,6 +737,11 @@ def main():
             ts_ms = int(round(t_i * 1000.0))
             if t_i < hold_s:
                 theta, rate = 0.0, 0.0
+            elif cliff is not None:
+                # a constant 2 rad/s for `cliff` samples, then still
+                k_fast = min(i - int(round(hold_s * fs)), cliff)
+                rate = 2.0 if i - int(round(hold_s * fs)) < cliff else 0.0
+                theta = 2.0 * k_fast / fs
             else:
                 tt = t_i - hold_s
                 env = math.exp(-tt / tau)
@@ -735,8 +753,10 @@ def main():
             ripple_g = 0.002 * math.sin(2.0 * math.pi * 9.0 * t_i)
             gyro = rate * k + e2e_gyro_bias + ripple_g
             if late is not None and late[0] <= t_i < late[0] + late[1]:
-                # (start s, length s, axis, peak rad/s): motion after the swing.
-                gyro = gyro + (late[3] * math.sin(math.pi * (t_i - late[0]) / late[1])
+                # (start s, length s, axis, peak rad/s[, cycles]): motion after
+                # the swing. Half a sine by default; cycles=2 is out and back.
+                cyc = late[4] if len(late) > 4 else 1
+                gyro = gyro + (late[3] * math.sin(cyc * math.pi * (t_i - late[0]) / late[1])
                                * np.asarray(late[2], dtype=float))
             if burst is not None and hold_s <= t_i < hold_s + 0.2:
                 # (axis, peak rad/s): a half-sine about another axis.
@@ -764,14 +784,45 @@ def main():
          "In-plane swing with an off-axis release transient."),
         ("REF_RUNON", [1.0, 0.0, 0.0], 45.0, 1.0, 0.5,
          "Quickly damped swing, then the phone is handled after a quiet spell."),
+        ("REF_CLIFF24", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "24 fast samples about x, 1.5 s quiet, then handling about y."),
+        ("REF_CLIFF25", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "25 fast samples about x, 1.5 s quiet, then handling about y."),
+        ("REF_CLIFF49", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "49 fast samples about x, 1.5 s quiet, then handling about y."),
+        ("REF_WEAKBUMP", [1.0, 0.0, 0.0], 16.0, 1.0, 0.6,
+         "Weak swing, then an out-and-back bump 1.3 s after it died."),
+        ("REF_WEAKLATE", [1.0, 0.0, 0.0], 14.0, 1.0, 0.5,
+         "Weaker swing, then the same bump 3 s after it died."),
     ]
+    from imu_flex_axis import (QUIET_STOP_MIN_SAMPLES as _QMIN, QUIET_STOP_S as _QS,
+                               QUIET_STOP_WEAK_S as _QWEAK)
+
+    def _last_fast(a0d, fhz, tau):
+        _, ts0, _, _, g0 = _ref_log([1.0, 0.0, 0.0], a0d, fhz, tau, total_s=9.0)
+        fast0 = [t for t, g in zip(ts0, g0) if np.linalg.norm(g) >= 1.0]
+        return max(fast0), len(fast0)
     opening_params = dict(ref_params, flex_axis_fit="opening")
     ref_angles = {}
     for tag, axis, a0d, fhz, tau, doc in ref_cases:
-        raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
-            axis, a0d, fhz, tau, total_s=6.0,
-            burst=([0.0, 1.0, 0.0], 3.0) if tag == "REF_TRANSIENT" else None,
-            late=(4.6, 1.2, [0.0, 1.0, 0.0], 4.0) if tag == "REF_RUNON" else None)
+        if tag.startswith("REF_CLIFF"):
+            n_cliff = int(tag[len("REF_CLIFF"):])
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=6.0, cliff=n_cliff,
+                late=(2.0 + n_cliff / 100.0 + 1.5, 1.0, [0.0, 1.0, 0.0], 4.0))
+        elif tag in ("REF_WEAKBUMP", "REF_WEAKLATE"):
+            t_died, n_weak = _last_fast(a0d, fhz, tau)
+            assert 0 < n_weak < _QMIN, f"{tag}: {n_weak} fast samples in the swing"
+            gap = 1.3 if tag == "REF_WEAKBUMP" else 3.0
+            assert (_QS < gap < _QWEAK) if tag == "REF_WEAKBUMP" else gap > _QWEAK
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=9.0,
+                late=(t_died + gap, 0.4, [0.0, 1.0, 0.0], 3.0, 2))
+        else:
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=6.0,
+                burst=([0.0, 1.0, 0.0], 3.0) if tag == "REF_TRANSIENT" else None,
+                late=(4.6, 1.2, [0.0, 1.0, 0.0], 4.0) if tag == "REF_RUNON" else None)
         if tag == "REF_RUNON":
             from imu_flex_axis import QUIET_STOP_S as _QUIET
             fast = [t for t, g in zip(ts_l, gyr_l) if np.linalg.norm(g) >= 1.0]
@@ -789,8 +840,17 @@ def main():
             assert 0 < n_fast < _MIN_COMMIT, f"{tag}: {n_fast} samples clear the threshold"
         else:
             assert n_fast >= _MIN_COMMIT, f"{tag}: only {n_fast} samples clear the threshold"
-        t_ref, ang_ref = replay_trial(raw, ref_params, tick_s=_ATICK)
+        cap_ref = {}
+        t_ref, ang_ref = replay_trial(raw, ref_params, tick_s=_ATICK, capture=cap_ref)
         assert len(t_ref) > 0, f"{tag} never zeroed"
+        if tag.startswith("REF_CLIFF") or tag in ("REF_WEAKBUMP", "REF_WEAKLATE"):
+            # The late motion is about y and the swing about x. It must not
+            # take the axis, and must be strong enough that it would have.
+            off_x = math.degrees(math.acos(min(1.0, abs(float(cap_ref["flex_axis"][0])))))
+            assert off_x < 5.0, f"{tag}: axis {off_x:.1f} deg off the swing"
+            e_x = sum(float(g[0] ** 2) for g in gyr_l if np.linalg.norm(g) >= 1.0)
+            e_y = sum(float(g[1] ** 2) for g in gyr_l if np.linalg.norm(g) >= 1.0)
+            assert e_y > e_x, f"{tag}: late motion {e_y:.0f} does not outweigh the swing {e_x:.0f}"
         ref_angles[tag] = (raw, np.asarray(ang_ref))
         parts.append(f"// {doc}\n")
         parts.append(f64_slice(f"{tag}_RAW_T", ts_l, "Per-step timestamp (s)."))
