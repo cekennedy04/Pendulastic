@@ -62,7 +62,8 @@ scores move. "Not verified" is stated, never implied.
   the same day. Step 2 change approved: the
   first-trough drop runs after the active-oscillation window bound.
 - **Release detector:** deferred; no problems seen in use. Revisit only if a problem
-  turns up that is too big to ignore.
+  turns up that is too big to ignore. (2026-11-18: one did, the early-catch release; the
+  owner approved the narrow fix recorded under workstream 2. The redesign stays deferred.)
 - **Clinical-field branches:** `neuromech/fall-speed-b13` and `neuromech/fall-speed-check`
   deleted.
 - **Cleanup:** the 43 daily-report branches deleted; archive pass, September doc rescue and
@@ -231,6 +232,25 @@ scores move. "Not verified" is stated, never implied.
   steady 9 degree sag through the hold is never caught. On rig-format recordings the
   app's offline scorer places the release inside the lift on some scenarios and takes
   the first sync pulse as the release when given a whole recording.
+
+- **Early-catch release (owner approved 2026-11-18; PR #126 open, branch
+  `fix/release-stalled-departure`):** a drop that catches a few degrees in and then swings
+  (severity axis lambda 1.2 to 1.5) came back "release not found": the first drop peaks under
+  1.0 rad/s and settles below the 0.3 rad/s guard, so the detector revoked the hold as
+  handling. A departure that has turned at least 2 degrees may now stall for up to 0.5 s and
+  resume the same way, within 1.0 s of when it began; it is zeroed on the pose where it
+  began. Known trade-off: a leg lowered a few degrees, paused under 0.5 s and let go the same
+  way is now read as one release (it was refused). Rust `calibration.rs` /
+  `replay.rs` and the Python mirror `imu_calibration_tuner.py`; not a scorer change. Corpus
+  (179 phone trials, Python reference replay): 167 curves bit-identical, one slow release
+  newly zeroed, 11 still without a release. Lambda 2.0 is still not found. Regression:
+  `neuromech/tests/test_phone_trial_catch.py`.
+- **Found 2026-11-18, open (owner approved a fix, separate PR to follow):** the app reading
+  PT7 1.23 for 0.39 on `A-P1p`, `B-mixed` and `M-tone_L4` is not sensor noise. The 25 cm
+  lever arm alone moves the settled angle 0.4 degrees, and the scorer's first peak pass
+  (height above the settled angle) then finds fewer than three extrema, which switches
+  swing-centring off: N 2.5 to 0.5, `f` unmeasured, `area_ratio` 0.15 to 0.62. Same in Python
+  and Rust.
 
 ### 3. PT scorer — ACTIVE, gates workstream 1
 - **Goal:** one validated scorer, identical in every language.
