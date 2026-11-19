@@ -90,13 +90,14 @@ RECENTRED_LABEL = ("RE-CENTRED RENDER (1:1 size, constant offset) - the rig's ze
                    "Needs a player limit of 28 deg or more (the checklist's -MaxDeg 25 fallback refuses all three). The fast\n"
                    "part of the swing is at NEGATIVE rig angles: play a slow file that goes to -27 deg first if none has.\n"
                    "\n"
-                   "PHONE APP, KNOWN PROBLEM (simulated, not yet seen on the rig): the lift in these files is only 25-27 deg\n"
-                   "in 4 s, about 0.22 rad/s at its fastest (INDEX.csv lift_peak_rad_s), which is under the app's 0.3 rad/s\n"
-                   "stillness guard. In replay the app takes the first sync pulse as the release, then counts the lift as\n"
-                   "stillness and ENDS THE TRIAL (\"settled\") about when the lift ends, 3 s BEFORE the swing. A capture\n"
-                   "started before PLAY therefore does not contain the swing. The 1:1 lift (0.45 rad/s) does not do this;\n"
-                   "the x0.70 lift (0.315 rad/s) clears the guard by 5 percent. Until this is settled, start the phone\n"
-                   "capture during the 3 s hold after the lift and check the recording contains the swing.")
+                   "PHONE APP PROCEDURE (owner, 2026-11-19): START THE PHONE CAPTURE DURING THE 3 s HOLD AFTER THE LIFT,\n"
+                   "not before PLAY, and check the recording contains the swing. The phone record then has no sync\n"
+                   "pulses: align the phone to the encoder by the release. The encoder log still has the pulses.\n"
+                   "Why (simulated, not yet seen on the rig): the lift in these files is only 25-27 deg in 4 s, about\n"
+                   "0.22 rad/s at its fastest (INDEX.csv lift_peak_rad_s), under the app's 0.3 rad/s stillness guard. In\n"
+                   "replay the app takes the first sync pulse as the release, then counts the lift as stillness and ENDS\n"
+                   "THE TRIAL (\"settled\") about when the lift ends, 3 s BEFORE the swing. The 1:1 lift (0.45 rad/s)\n"
+                   "does not do this; the x0.70 lift (0.315 rad/s) clears the guard by 5 percent.")
 EXE_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <startup>
@@ -533,8 +534,9 @@ This file says what is here and what the limits are; the checklist says what to 
                             INDEX.csv) so the hold is near +27 deg and the bottom of the drop near -27.
                             THE RIG'S ZERO IS NOT THE LEG'S REST in these files: the arm ends the swing
                             below 0 and returns to 0 at the end. Label such trials "recentred".
-                            READ ITS README.txt BEFORE USING THE PHONE APP: a capture started before PLAY
-                            ends during the slow lift, before the swing (simulated; not yet seen on the rig).
+                            PHONE APP: START THE CAPTURE DURING THE 3 s HOLD AFTER THE LIFT, not before
+                            PLAY (owner, 2026-11-19; why is in its README.txt). The phone record then has
+                            no sync pulses: align it to the encoder by the release.
    bench_log.csv            the run sheet: one row per play, with the P, I, D and output range used
    logs\                    copy StretchExperiment's .bin logs here
    MANIFEST.txt             every file with its SHA256, the commit, and the guard status
