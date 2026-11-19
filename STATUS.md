@@ -343,7 +343,7 @@ scores move. "Not verified" is stated, never implied.
   `0.2.0+...`. Independent review of the split: `docs/seed-fix-split-review`.
 
 - **Flexion axis fitted on the whole swing (owner approved 2026-11-19; branch
-  `fix/flex-axis-whole-recording`, PR open, not merged; core 0.5.0, footing
+  `fix/flex-axis-whole-recording`, PR #130 open, not merged; core 0.5.0, footing
   `ref-100hz-ema0.5-flexrec`):** the scored replay, in Rust and in the Python reference, now
   fits the flexion axis on every sample from the zero until the swing has died and does not
   level it. Before, it used the first 25 samples (the release itself) levelled against an
