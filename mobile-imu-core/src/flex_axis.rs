@@ -92,6 +92,68 @@ pub const QUIET_STOP_MIN_SAMPLES: usize = MIN_COMMIT_SAMPLES;
 /// long. Mirrors `QUIET_STOP_WEAK_S` in `imu_flex_axis.py`.
 pub const QUIET_STOP_WEAK_S: f64 = 2.0;
 
+/// [`AxisFitReport`]: late motion is flagged when it carries at least this
+/// multiple of the fit's energy. Mirrors `LATE_MOTION_ENERGY_RATIO` in
+/// `imu_flex_axis.py`. Flags only.
+pub const LATE_MOTION_ENERGY_RATIO: f64 = 0.1;
+
+/// [`AxisFitReport`]: a fit that took a qualifying sample after this long
+/// without one is flagged. Mirrors `SPAN_QUIET_S` in `imu_flex_axis.py`.
+pub const SPAN_QUIET_S: f64 = 0.8;
+
+/// How a whole-recording fit ended and what it left out. A FLAG, not a
+/// correction: nothing here changes the axis, the angle or the score. Mirrors
+/// `FlexAxisEstimator.fit_report` in `imu_flex_axis.py`, where each flag is
+/// described.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AxisFitReport {
+    /// Qualifying samples in the fit.
+    pub n_fit: usize,
+    /// Whether the fit closed before the recording ended.
+    pub closed: bool,
+    /// Qualifying samples that arrived after the fit closed.
+    pub late_n: usize,
+    /// Their energy (sum of squared rates) over the fit's.
+    pub late_energy_ratio: f64,
+    /// Longest measured stretch without a qualifying sample that the fit
+    /// went on to span, seconds. A sample dropout counts in full.
+    pub max_span_s: f64,
+}
+
+impl AxisFitReport {
+    /// The fit closed under [`QUIET_STOP_MIN_SAMPLES`] and qualifying motion
+    /// arrived after it.
+    pub fn weak_then_motion(&self) -> bool {
+        self.closed && self.n_fit < QUIET_STOP_MIN_SAMPLES && self.late_n > 0
+    }
+
+    /// The fit closed and the motion after it carried at least
+    /// [`LATE_MOTION_ENERGY_RATIO`] times its energy.
+    pub fn motion_after_swing_settled(&self) -> bool {
+        self.closed && self.late_n > 0 && self.late_energy_ratio >= LATE_MOTION_ENERGY_RATIO
+    }
+
+    /// The fit took a qualifying sample after [`SPAN_QUIET_S`] without one.
+    pub fn spans_quiet(&self) -> bool {
+        self.max_span_s >= SPAN_QUIET_S
+    }
+
+    /// The flag codes that apply, in the order `fit_report` lists them.
+    pub fn flags(&self) -> Vec<&'static str> {
+        let mut f = Vec::new();
+        if self.weak_then_motion() {
+            f.push("axis_fit_weak_then_motion");
+        }
+        if self.motion_after_swing_settled() {
+            f.push("motion_after_swing_settled");
+        }
+        if self.spans_quiet() {
+            f.push("axis_fit_spans_quiet");
+        }
+        f
+    }
+}
+
 /// Online principal-axis estimator. Feed it raw gyro vectors via
 /// [`FlexAxisEstimator::update`]; read [`FlexAxisEstimator::axis`] for the
 /// current best estimate (`None` until the first above-threshold sample) and
@@ -118,6 +180,12 @@ pub struct FlexAxisEstimator {
     /// Set when a quiet second found the fit under
     /// [`QUIET_STOP_MIN_SAMPLES`]: it then closes on reaching that count.
     capped: bool,
+    /// Report only ([`FlexAxisEstimator::fit_report`]); none of these four
+    /// reaches the axis.
+    late_n: usize,
+    late_energy: f64,
+    since_fast: f64,
+    max_span: f64,
 }
 
 impl Default for FlexAxisEstimator {
@@ -151,6 +219,10 @@ impl FlexAxisEstimator {
             quiet: 0.0,
             closed: false,
             capped: false,
+            late_n: 0,
+            late_energy: 0.0,
+            since_fast: 0.0,
+            max_span: 0.0,
         }
     }
 
@@ -173,6 +245,35 @@ impl FlexAxisEstimator {
     /// True once a whole-recording fit has stopped taking samples.
     pub fn closed(&self) -> bool {
         self.closed
+    }
+
+    /// Report the time since the previous gyro sample, as measured (NOT the
+    /// bounded interval the filter integrates: a dropout counts in full).
+    /// Report only: it feeds [`AxisFitReport::max_span_s`] and never the fit.
+    pub fn elapsed(&mut self, dt: f64) {
+        if self.quiet_stop.is_none() || self.n == 0 || self.closed {
+            return;
+        }
+        if dt.is_finite() && dt > 0.0 {
+            self.since_fast += dt;
+        }
+    }
+
+    /// How a whole-recording fit ended and what it left out, or `None` for an
+    /// opening fit or one that took no sample. Read it after the replay.
+    pub fn fit_report(&self) -> Option<AxisFitReport> {
+        if self.quiet_stop.is_none() || self.n == 0 {
+            return None;
+        }
+        let fit_energy = self.m[0][0] + self.m[1][1] + self.m[2][2];
+        let ratio = if fit_energy > 0.0 { self.late_energy / fit_energy } else { 0.0 };
+        Some(AxisFitReport {
+            n_fit: self.n,
+            closed: self.closed,
+            late_n: self.late_n,
+            late_energy_ratio: ratio,
+            max_span_s: self.max_span,
+        })
     }
 
     /// Report `dt` seconds spent under the threshold. Only a whole-recording
@@ -234,7 +335,7 @@ impl FlexAxisEstimator {
     /// callers can drive it unconditionally. Gravity is optional: without it
     /// the axis is simply not levelled.
     pub fn update(&mut self, v: Vec3, gravity: Option<Vec3>) {
-        if self.committed || self.closed {
+        if self.committed && !self.closed {
             return;
         }
         if !is_finite3(v) {
@@ -242,6 +343,13 @@ impl FlexAxisEstimator {
         }
         let mag = norm3(v);
         if mag < self.threshold {
+            return;
+        }
+        if self.closed {
+            // Qualifying motion the closed fit leaves out. Counted for
+            // `fit_report` and nothing else.
+            self.late_n += 1;
+            self.late_energy += mag * mag;
             return;
         }
 
@@ -273,6 +381,10 @@ impl FlexAxisEstimator {
                 self.m[i][j] += v[i] * v[j];
             }
         }
+        if self.n > 0 && self.since_fast > self.max_span {
+            self.max_span = self.since_fast;
+        }
+        self.since_fast = 0.0;
         self.n += 1;
         self.quiet = 0.0;
         if self.capped && self.n >= QUIET_STOP_MIN_SAMPLES {
@@ -339,6 +451,10 @@ impl FlexAxisEstimator {
         self.quiet = 0.0;
         self.closed = false;
         self.capped = false;
+        self.late_n = 0;
+        self.late_energy = 0.0;
+        self.since_fast = 0.0;
+        self.max_span = 0.0;
     }
 }
 
@@ -935,5 +1051,160 @@ mod whole_recording_tests {
         assert!(!e.closed());
         e.update([2.0, 0.0, 0.0], None);
         assert_eq!(e.n_samples(), 2);
+    }
+}
+
+#[cfg(test)]
+mod fit_report_tests {
+    use super::*;
+
+    const X: Vec3 = [1.0, 0.0, 0.0];
+    const Y: Vec3 = [0.0, 1.0, 0.0];
+
+    fn scaled(v: Vec3, k: f64) -> Vec3 {
+        [v[0] * k, v[1] * k, v[2] * k]
+    }
+
+    /// `n` samples 10 ms apart, as `replay` drives the estimator.
+    fn feed(e: &mut FlexAxisEstimator, n: usize, v: Vec3) {
+        for _ in 0..n {
+            e.elapsed(0.01);
+            if norm3(v) < DEFAULT_THRESHOLD {
+                e.quiet(0.01);
+            } else {
+                e.update(v, None);
+            }
+        }
+    }
+
+    fn rec() -> FlexAxisEstimator {
+        FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD)
+    }
+
+    #[test]
+    fn an_opening_fit_or_an_empty_one_has_no_report() {
+        let mut e = FlexAxisEstimator::default();
+        feed(&mut e, 40, scaled(X, 2.0));
+        assert!(e.fit_report().is_none());
+        let mut e = rec();
+        feed(&mut e, 300, [0.0; 3]);
+        assert!(e.fit_report().is_none());
+    }
+
+    #[test]
+    fn a_clean_swing_raises_nothing() {
+        let mut e = rec();
+        for k in 0..6 {
+            feed(&mut e, 45, scaled(X, if k % 2 == 0 { 3.0 } else { -3.0 }));
+            feed(&mut e, 30, [0.0; 3]); // a slow reversal, 0.3 s
+        }
+        feed(&mut e, 300, [0.0; 3]);
+        let r = e.fit_report().unwrap();
+        assert!(r.closed && r.n_fit == 270 && r.late_n == 0, "{r:?}");
+        assert!((r.max_span_s - 0.31).abs() < 1e-9, "{r:?}");
+        assert!(r.flags().is_empty(), "{r:?}");
+    }
+
+    #[test]
+    fn a_weak_fit_with_nothing_after_it_raises_nothing() {
+        for n in [20, 23, 24] {
+            let mut e = rec();
+            feed(&mut e, n, scaled(X, 1.5));
+            feed(&mut e, 400, [0.0; 3]);
+            let r = e.fit_report().unwrap();
+            assert!(r.closed && r.n_fit == n && r.flags().is_empty(), "{n}: {r:?}");
+        }
+    }
+
+    #[test]
+    fn brief_motion_then_a_long_hold_then_the_swing_is_flagged() {
+        let mut e = rec();
+        feed(&mut e, 8, scaled(Y, 1.6));
+        feed(&mut e, 220, [0.0; 3]); // 2.2 s: past QUIET_STOP_WEAK_S
+        feed(&mut e, 100, scaled(X, 3.0));
+        e.finalize();
+        let r = e.fit_report().unwrap();
+        assert_eq!((r.n_fit, r.closed, r.late_n), (8, true, 100));
+        assert!(r.weak_then_motion() && r.motion_after_swing_settled() && !r.spans_quiet(), "{r:?}");
+        assert!((r.late_energy_ratio - 900.0 / (8.0 * 1.6 * 1.6)).abs() < 1e-9, "{r:?}");
+        // The flag is all there is: the axis is still the brief motion's.
+        assert!(e.axis().unwrap()[1].abs() > 0.999);
+    }
+
+    #[test]
+    fn motion_before_the_quiet_second_is_up_is_flagged() {
+        let mut e = rec();
+        feed(&mut e, 26, scaled(X, 2.0));
+        feed(&mut e, 90, [0.0; 3]);
+        feed(&mut e, 100, scaled(Y, 3.0));
+        let r = e.fit_report().unwrap();
+        assert!(!r.closed && r.n_fit == 126 && r.late_n == 0, "{r:?}");
+        assert!((r.max_span_s - 0.91).abs() < 1e-9, "{r:?}");
+        assert_eq!(r.flags(), vec!["axis_fit_spans_quiet"]);
+    }
+
+    #[test]
+    fn a_sample_dropout_inside_the_quiet_is_flagged() {
+        let mut e = rec();
+        feed(&mut e, 30, scaled(X, 2.0));
+        feed(&mut e, 20, [0.0; 3]);
+        // One sample after a 2.5 s gap: the filter integrates the nominal
+        // 10 ms, so the quiet clock gains 10 ms; the report counts 2.5 s.
+        e.elapsed(2.5);
+        e.quiet(0.01);
+        feed(&mut e, 100, scaled(Y, 3.0));
+        let r = e.fit_report().unwrap();
+        assert!(!r.closed && r.n_fit == 130, "{r:?}");
+        assert!((r.max_span_s - 2.71).abs() < 1e-9, "{r:?}");
+        assert_eq!(r.flags(), vec!["axis_fit_spans_quiet"]);
+    }
+
+    #[test]
+    fn handling_after_the_swing_is_flagged_by_its_energy() {
+        let mut e = rec();
+        feed(&mut e, 100, scaled(X, 3.0));
+        feed(&mut e, 150, [0.0; 3]);
+        feed(&mut e, 2, scaled(Y, 1.0)); // 2 / 900 of the fit's energy
+        let r = e.fit_report().unwrap();
+        assert!(r.closed && r.late_n == 2 && r.flags().is_empty(), "{r:?}");
+        feed(&mut e, 50, scaled(Y, 2.0)); // now 202 / 900
+        let r = e.fit_report().unwrap();
+        assert!((r.late_energy_ratio - 202.0 / 900.0).abs() < 1e-12, "{r:?}");
+        assert_eq!(r.flags(), vec!["motion_after_swing_settled"]);
+    }
+
+    /// The counters are a report: with and without them the axis is the same
+    /// to the bit, and `reset` clears them.
+    #[test]
+    fn the_report_does_not_touch_the_fit() {
+        let (mut a, mut b) = (rec(), rec());
+        let seq: [(usize, Vec3); 5] = [
+            (20, [1.7, 0.4, 0.1]),
+            (130, [0.0; 3]),
+            (9, [0.2, 2.2, 0.3]),
+            (250, [0.0; 3]),
+            (60, [0.3, 0.1, 2.9]),
+        ];
+        for (n, v) in seq {
+            feed(&mut a, n, v);
+            for _ in 0..n {
+                // b: no elapsed() at all.
+                if norm3(v) < DEFAULT_THRESHOLD {
+                    b.quiet(0.01);
+                } else {
+                    b.update(v, None);
+                }
+            }
+        }
+        a.finalize();
+        b.finalize();
+        assert_eq!(a.axis(), b.axis());
+        assert_eq!((a.n_samples(), a.closed()), (b.n_samples(), b.closed()));
+        assert!(a.fit_report().unwrap().late_n > 0);
+        a.reset();
+        assert!(a.fit_report().is_none());
+        feed(&mut a, 5, scaled(X, 2.0));
+        let r = a.fit_report().unwrap();
+        assert_eq!((r.n_fit, r.late_n, r.max_span_s), (5, 0, 0.01));
     }
 }

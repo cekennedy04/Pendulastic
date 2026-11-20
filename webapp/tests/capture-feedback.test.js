@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createAudioCues } from '../src/audio-cues.js';
-import { captureQualityOf, SETTLE_TARGET_S, HOLD_TARGET_S, progressOf, beepsDue, wholeSeconds, lateralNote } from '../src/capture-feedback.js';
+import { captureQualityOf, SETTLE_TARGET_S, HOLD_TARGET_S, progressOf, beepsDue, wholeSeconds, lateralNote, axisFitNote } from '../src/capture-feedback.js';
 
 const T = 5.0;
 
@@ -203,4 +203,47 @@ test('a planar trial is reported as zero, not hidden', () => {
 
 test('a non-finite fraction renders nothing rather than NaN%', () => {
   assert.equal(lateralNote({ lateral_fraction: NaN, lateral_peak_deg_s: 1 }), null);
+});
+
+// ---- the flexion-axis fit's flags (mobile-imu-core AxisFitReport) ----------
+
+const fitReport = (flags, extra = {}) => ({
+  n_fit: 129, closed: true, late_n: 0, late_energy_ratio: 0, max_span_s: 0.26, flags, ...extra,
+});
+
+test('no axis-fit note without a report or without a flag', () => {
+  assert.equal(axisFitNote(undefined), null);   // older record / older wasm
+  assert.equal(axisFitNote(null), null);        // the core had no report
+  assert.equal(axisFitNote(fitReport([])), null);
+  assert.equal(axisFitNote({}), null);
+  assert.equal(axisFitNote(fitReport(['a_flag_this_build_does_not_know'])), null);
+});
+
+test('a fit closed on a brief movement says the angles may be too small', () => {
+  const s = axisFitNote(fitReport(['axis_fit_weak_then_motion', 'motion_after_swing_settled'],
+                                  { n_fit: 7, late_n: 129, late_energy_ratio: 36.6 }));
+  assert.match(s, /^Check this trial: /);
+  assert.match(s, /brief movement \(7 samples\)/);
+  assert.match(s, /angles may be too small/);
+  // The weaker statement is not repeated beside the stronger one.
+  assert.doesNotMatch(s, /after the swing had settled/);
+});
+
+test('movement after the swing settled is reported on its own', () => {
+  const s = axisFitNote(fitReport(['motion_after_swing_settled'], { late_n: 383, late_energy_ratio: 11.8 }));
+  assert.match(s, /moved again after the swing had settled/);
+  assert.doesNotMatch(s, /too small|paused/);
+});
+
+test('a fit that spans a pause or a sample gap gives the length', () => {
+  const s = axisFitNote(fitReport(['axis_fit_spans_quiet'], { closed: false, max_span_s: 3.2 }));
+  assert.match(s, /paused of 3\.2 s, or samples were lost/);
+  assert.match(s, /may mix two movements/);
+});
+
+test('two flags make one sentence, and none of them is a verdict', () => {
+  const s = axisFitNote(fitReport(['motion_after_swing_settled', 'axis_fit_spans_quiet'], { max_span_s: 1.6 }));
+  assert.match(s, /settled; .*paused of 1\.6 s/);
+  assert.equal(s.split('Check this trial').length, 2);
+  assert.doesNotMatch(s, /invalid|rejected|discard|fail/i);
 });

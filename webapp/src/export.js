@@ -114,6 +114,9 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
       quick_test: Boolean(t.quick_test),
       // null = not measured; never defaulted to zeros.
       lateral_motion: t.lateral_motion ?? null,
+      // The axis fit's report and flag codes. null = not reported (an older
+      // record or wasm, or the core had none); never "no flags".
+      axis_fit: t.axis_fit ?? null,
       // False only for a recording the engine could not score. Absent means
       // scorable: a trial recorded before this field existed had params.
       scorable: t.scorable ?? true,

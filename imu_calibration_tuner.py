@@ -493,6 +493,7 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
             # The old 0.5 s bound silently substituted a constant for any
             # stream slower than 2 Hz -- see on_gyro()'s comment for the
             # live-trial measurement that found it.
+            raw_dt = dt
             if dt is None or not (0.0 < dt <= _MAX_GYRO_DT_S):
                 dt = _NOMINAL_GYRO_DT_S
             st.last_ts = ts
@@ -629,6 +630,11 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
             # done to the leg or the phone after the swing has died cannot
             # reach the axis. A no-op for the opening fit and before the
             # first fed sample.
+            if is_distal or is_solo:
+                # Measured time since the previous gyro sample, for the
+                # report on the fit only (a dropout counts in full here,
+                # where `dt` is bounded). Never reaches the axis.
+                flex_est.elapsed(raw_dt if raw_dt is not None and raw_dt > 0.0 else dt)
             if (is_distal or is_solo) and omega_mag < _FLEX_CAPTURE_THRESHOLD:
                 flex_est.quiet(dt)
             if flex_axis_armed and (is_distal or is_solo) and \
@@ -810,6 +816,9 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
             capture["q_zero"] = np.asarray(q_zero[role], dtype=float).copy()
             capture["flex_axis"] = (None if flex_axis is None
                                     else np.asarray(flex_axis, dtype=float).copy())
+            # How the whole-recording fit ended and what it left out (flags
+            # only); None for the opening fit.
+            capture["axis_fit"] = flex_est.fit_report()
             capture["g_zero"] = (None if g_zero.get(role) is None
                                  else np.asarray(g_zero[role], dtype=float).copy())
     method = params.get("method", "relative")

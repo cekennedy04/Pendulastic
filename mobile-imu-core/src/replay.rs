@@ -16,7 +16,7 @@ use crate::ahrs::{gravity_seed, qconj, qmul, MadgwickAhrs, Quat, Vec3};
 use crate::calibration::{
     calibrate_accel_bias, calibrate_gyro_bias, gravity_dir_from_hold, ReleaseDetector,
 };
-use crate::flex_axis::{FlexAxisEstimator, DEFAULT_THRESHOLD};
+use crate::flex_axis::{AxisFitReport, FlexAxisEstimator, DEFAULT_THRESHOLD};
 use crate::goniometry::{ockendon_deg, OCKENDON_FT_RATIO};
 use crate::resample::{ema_smooth, rescale_ema_alpha, tick_resample, ANALYSIS_TICK_S, TICK_S};
 use crate::stillness::{is_stationary_window, SampleBuf, GYRO_BIAS_WINDOW_S};
@@ -174,6 +174,11 @@ pub struct TrialResult {
     /// or `None` when `flex_axis_capture` is off or no sample after the zero
     /// cleared the capture threshold.
     pub flex_axis: Option<Vec3>,
+    /// How the whole-recording axis fit ended and what it left out. Flags
+    /// only: it does not change `angle_deg`. `None` under
+    /// `FlexAxisFit::Opening`, with `flex_axis_capture` off, or when no
+    /// sample after the zero cleared the capture threshold.
+    pub axis_fit: Option<AxisFitReport>,
 }
 
 fn sub3(a: Vec3, b: Vec3) -> Vec3 {
@@ -311,9 +316,13 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
             }
             Sensor::Mag => mag = Some(s.v),
             Sensor::Gyro => {
+                // The interval as measured, for the axis fit's report only:
+                // a dropout counts in full there, where `dt` is bounded.
+                let mut raw_dt: Option<f64> = None;
                 let dt = match last_ts {
                     Some(prev) if s.ts_ms != 0 => {
                         let d = (s.ts_ms - prev) as f64 / 1000.0;
+                        raw_dt = Some(d);
                         if d > 0.0 && d <= MAX_GYRO_DT_S {
                             d
                         } else {
@@ -373,6 +382,10 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
                 // after the swing has died cannot reach the axis.
                 if cfg.flex_axis_capture && zero.is_some() {
                     let rate = (s.v[0] * s.v[0] + s.v[1] * s.v[1] + s.v[2] * s.v[2]).sqrt();
+                    flex.elapsed(match raw_dt {
+                        Some(d) if d > 0.0 => d,
+                        _ => dt,
+                    });
                     if rate < DEFAULT_THRESHOLD {
                         flex.quiet(dt);
                     } else {
@@ -418,6 +431,7 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
         flex.finalize();
     }
     let flex_axis = if cfg.flex_axis_capture { flex.axis() } else { None };
+    let axis_fit = if cfg.flex_axis_capture { flex.fit_report() } else { None };
 
     let angle_raw: Vec<f64> = sample_q
         .iter()
@@ -437,5 +451,6 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
         release_quat,
         release_idx,
         flex_axis,
+        axis_fit,
     })
 }

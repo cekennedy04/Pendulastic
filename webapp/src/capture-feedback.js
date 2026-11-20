@@ -69,6 +69,40 @@ export function beepsDue(prevWholeSeconds, nextValue) {
 /// the same reason ZONE_CLASSIFICATION_CALIBRATED is false and the PT zone is
 /// suppressed. A clinician reading "18% of the swing was out of plane" can
 /// judge it; a red "POOR" badge would be inventing a cutoff.
+/// One line for a trial whose flexion-axis fit raised a flag, or null when
+/// there is nothing to say: no report (an older record or an older wasm), or
+/// a report with no flags.
+///
+/// The flags come from the scoring core (`AxisFitReport::flags` in
+/// mobile-imu-core, `FlexAxisEstimator.fit_report` in imu_flex_axis.py). They
+/// change no angle and no score, and nothing here drops or refuses a trial:
+/// the line says what happened and leaves the judgement to the reader, like
+/// lateralNote.
+///
+///   axis_fit_weak_then_motion   the axis was fitted on a brief movement and
+///                               the main movement came after the fit closed
+///   motion_after_swing_settled  more movement after the swing had died
+///   axis_fit_spans_quiet        the fit took in movement on both sides of a
+///                               long pause, or of a gap in the samples
+export function axisFitNote(axisFit) {
+  if (!axisFit || !Array.isArray(axisFit.flags) || axisFit.flags.length === 0) return null;
+  const has = (f) => axisFit.flags.includes(f);
+  const parts = [];
+  if (has('axis_fit_weak_then_motion')) {
+    const n = Number.isFinite(axisFit.n_fit) ? ` (${axisFit.n_fit} samples)` : '';
+    parts.push(`the swing axis was set by a brief movement${n}, and the main movement came after it, so the angles may be too small`);
+  } else if (has('motion_after_swing_settled')) {
+    parts.push('the leg or the phone moved again after the swing had settled; the swing axis is from the first swing only');
+  }
+  if (has('axis_fit_spans_quiet')) {
+    const s = Number.isFinite(axisFit.max_span_s) ? ` of ${axisFit.max_span_s.toFixed(1)} s` : '';
+    parts.push(`the movement paused${s}, or samples were lost, and then went on, so the swing axis may mix two movements`);
+  }
+  if (parts.length === 0) return null;
+  const text = parts.join('; ');
+  return `Check this trial: ${text}.`;
+}
+
 export function lateralNote(lateral) {
   if (lateral === undefined) return null;
   if (lateral === null) {

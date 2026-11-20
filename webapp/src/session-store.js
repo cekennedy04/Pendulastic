@@ -97,6 +97,7 @@ export function makeTrialRecord({
   scoreFormulaId = null, scoringFooting = null,
   settleTargetS = 5.0,
   lateralMotion = null,
+  axisFit = undefined,
   quickTest = false,
   // Whether the engine produced a score for this recording. A recording it
   // could not score (no usable swing -- e.g. an SSR staircase) is KEPT with
@@ -181,6 +182,13 @@ export function makeTrialRecord({
     // claim from 0 ("measured, and perfectly planar") and must not be
     // collapsed into it by a reader.
     lateral_motion: lateralMotion,
+    // Capture quality, NOT a scored parameter: how the scored replay's
+    // flexion-axis fit ended and what it left out, with its flag codes
+    // ({n_fit, closed, late_n, late_energy_ratio, max_span_s, flags}). The
+    // flags change no angle and no score. null = the core had no report;
+    // the key is ABSENT on a record scored by a wasm without the export,
+    // which is not the same as "reported, no flags".
+    ...(axisFit === undefined ? {} : { axis_fit: axisFit }),
     // False only for a recording the engine could not score. A reader must
     // treat `params: null` here as "not scorable", never coerce it to zeros.
     scorable,

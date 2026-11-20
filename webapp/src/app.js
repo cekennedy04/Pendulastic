@@ -21,7 +21,7 @@ import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, in
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
-import { captureQualityOf, SETTLE_TARGET_S, progressOf, beepsDue, wholeSeconds , lateralNote } from './capture-feedback.js';
+import { captureQualityOf, SETTLE_TARGET_S, progressOf, beepsDue, wholeSeconds , lateralNote, axisFitNote } from './capture-feedback.js';
 import { metricRows, directionNote, formatNumber, formatDelta } from './metric-rows.js';
 import { createAudioCues } from './audio-cues.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
@@ -118,6 +118,7 @@ export function nextOutcome(latched, event) {
     if ('scoringQuality' in event) action.scoringQuality = event.scoringQuality;
     if ('scoringQualityDetrended' in event) action.scoringQualityDetrended = event.scoringQualityDetrended;
     if ('lateralMotion' in event) action.lateralMotion = event.lateralMotion;
+    if ('axisFit' in event) action.axisFit = event.axisFit;
     if ('provenance' in event) action.provenance = event.provenance;
     return { latched: false, action };
   }
@@ -700,7 +701,7 @@ if (typeof document !== 'undefined') {
   async function persistTrial(params, trajectory, rawJsonl, ptScore,
                               paramsDetrended, ptScoreDetrended, lateralMotion,
                               detrendedRefusal, scoringQuality, scoringQualityDetrended,
-                              provenance = null) {
+                              provenance = null, axisFit = undefined) {
     // The STORED record uses the analysis convention (detrend=true) so it
     // agrees with the cohort reports it will be compared against; the live
     // screen keeps the capture app's convention. Which one produced a stored
@@ -743,6 +744,9 @@ if (typeof document !== 'undefined') {
       scoringQuality: (useDetrended ? scoringQualityDetrended : scoringQuality) ?? null,
       // null means NOT MEASURED and is stored as such -- see makeTrialRecord.
       lateralMotion: lateralMotion ?? null,
+      // The axis fit's report and flags; undefined (an older wasm) is stored
+      // as absent, not as "no flags" -- see makeTrialRecord.
+      axisFit,
       // Which formula and replay footing scored this trial, read from the
       // wasm (worker.js scoringProvenance). The trends view breaks a series
       // where the footing changes (crate 0.4.0, owner decision Q2).
@@ -1169,6 +1173,15 @@ if (typeof document !== 'undefined') {
     const node = el('lateral-note');
     if (!node) return;
     const text = lateralNote(lateral);
+    node.hidden = text === null;
+    node.textContent = text || '';
+  }
+  // The axis fit's flags, beside the out-of-plane note. Hidden when there is
+  // no report or no flag; it never hides or changes a number.
+  function renderAxisFit(axisFit) {
+    const node = el('axis-fit-note');
+    if (!node) return;
+    const text = axisFitNote(axisFit);
     node.hidden = text === null;
     node.textContent = text || '';
   }
@@ -1978,6 +1991,7 @@ if (typeof document !== 'undefined') {
       lastTrajectory = t.trajectory;
       renderResult(t.params);
       renderLateral(t.lateral_motion);
+      renderAxisFit(t.axis_fit);
       renderMetricList(t.params, ptScoreForStoredTrial(t));
       // Without this the panel kept rendering whichever trial was last
       // captured, beside this trial's metric list and waveform.
@@ -2232,6 +2246,7 @@ if (typeof document !== 'undefined') {
     showParamSelectFor(p);
     renderResult(p);
     renderLateral(action.lateralMotion);
+    renderAxisFit(action.axisFit);
     renderMetricList(p, action.ptScore);
     showExportControls();
     resetToIdle();
@@ -2287,7 +2302,7 @@ if (typeof document !== 'undefined') {
         .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl, action.ptScore,
                                          action.paramsDetrended, action.ptScoreDetrended, action.lateralMotion,
                                          action.detrendedRefusal, action.scoringQuality,
-                                         action.scoringQualityDetrended, action.provenance))
+                                         action.scoringQualityDetrended, action.provenance, action.axisFit))
         .catch((err) => {
           el('session-status').textContent =
             `trial was scored but NOT saved: ${err instanceof Error ? err.message : String(err)}`;
