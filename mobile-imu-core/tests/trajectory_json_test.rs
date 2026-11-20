@@ -61,7 +61,7 @@ fn synthetic() -> (TrialResult, PtParams) {
     let t_r = t[2..].to_vec();
     let ang_r = angle_deg[2..].to_vec();
 
-    let r = TrialResult { t, angle_deg, release_quat: IDENTITY_QUAT, release_idx: 999, flex_axis: None };
+    let r = TrialResult { t, angle_deg, release_quat: IDENTITY_QUAT, release_idx: 999, flex_axis: None, axis_fit: None };
     let mut p = finite_params();
     p.t_r = t_r;
     p.ang_r = ang_r;

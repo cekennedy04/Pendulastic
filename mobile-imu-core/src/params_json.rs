@@ -11,7 +11,7 @@
 //! deliberately excluded: they're for plotting/downstream checks, not the
 //! summary payload this call returns.
 
-use crate::flex_axis::LateralMotion;
+use crate::flex_axis::{AxisFitReport, LateralMotion};
 use crate::scoring::{PtParams, SpasticityType};
 
 fn spasticity_type_str(t: SpasticityType) -> &'static str {
@@ -90,6 +90,27 @@ pub fn scoring_quality_to_json(p: &PtParams) -> String {
         rejected,
         flags.join(",")
     )
+}
+
+/// Capture-quality JSON for the scored replay's axis fit (`AxisFitReport`):
+/// how it ended, what it left out, and the flag codes that apply. `None`
+/// serialises as the JSON literal `null`.
+pub fn axis_fit_to_json(r: Option<AxisFitReport>) -> String {
+    match r {
+        None => "null".to_string(),
+        Some(r) => {
+            let flags: Vec<String> = r.flags().iter().map(|f| format!("\"{f}\"")).collect();
+            format!(
+                "{{\"n_fit\":{},\"closed\":{},\"late_n\":{},\"late_energy_ratio\":{},\"max_span_s\":{},\"flags\":[{}]}}",
+                r.n_fit,
+                r.closed,
+                r.late_n,
+                fmt_f64(r.late_energy_ratio),
+                fmt_f64(r.max_span_s),
+                flags.join(",")
+            )
+        }
+    }
 }
 
 /// Capture-quality JSON for one trial's lateral motion.

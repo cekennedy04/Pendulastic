@@ -181,6 +181,16 @@ impl WasmSession {
     pub fn lateral_motion(&self) -> String {
         params_json::lateral_motion_to_json(self.inner.lateral_motion())
     }
+
+    /// Capture quality: how the scored replay's axis fit ended and what it
+    /// left out, `{"n_fit":..,"closed":..,"late_n":..,"late_energy_ratio":..,
+    /// "max_span_s":..,"flags":[..]}`, or the literal `null`. Flags only; a
+    /// separate call so no scored payload changes.
+    ///
+    /// Pure delegation, per this module's logic-free rule.
+    pub fn axis_fit(&self) -> String {
+        params_json::axis_fit_to_json(self.inner.axis_fit())
+    }
 }
 
 /// The healthy reference each scored parameter is compared against, plus the

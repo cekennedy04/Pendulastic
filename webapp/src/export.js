@@ -68,7 +68,11 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
     // v7 adds `score_formula_id` and `scoring_footing` to each trial (crate
     // 0.4.0 moved the app onto the reference footing). null = a trial scored
     // before the fields existed, on the old app footing.
-    schema: 'pendulastic/session-export/v7',
+    // v8 adds `axis_fit` to each trial: how the scored replay's flexion-axis
+    // fit ended, with its flag codes. null = not reported (an older record or
+    // wasm, or a fit that took no sample); the export does not tell those
+    // apart, the stored record does (the key is absent for an older wasm).
+    schema: 'pendulastic/session-export/v8',
     exported_at: new Date().toISOString(),
     // A session-level default; the trial-level value below is the one that
     // is actually true if the app updated mid-session.
@@ -114,6 +118,9 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
       quick_test: Boolean(t.quick_test),
       // null = not measured; never defaulted to zeros.
       lateral_motion: t.lateral_motion ?? null,
+      // The axis fit's report and flag codes. null = not reported (an older
+      // record or wasm, or the core had none); never "no flags".
+      axis_fit: t.axis_fit ?? null,
       // False only for a recording the engine could not score. Absent means
       // scorable: a trial recorded before this field existed had params.
       scorable: t.scorable ?? true,

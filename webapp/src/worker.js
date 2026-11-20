@@ -83,6 +83,16 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
       if (typeof inner.lateral_motion !== "function") return null;
       return JSON.parse(inner.lateral_motion());
     },
+    // Capture quality: how the scored replay's flexion-axis fit ended and
+    // what it left out ({n_fit, closed, late_n, late_energy_ratio,
+    // max_span_s, flags: [...]}). Flags only: it changes no angle and no
+    // score. `null` = the core had no report (the fit took no sample);
+    // `undefined` = an older wasm without the export, which the record keeps
+    // distinct from "reported, no flags".
+    axisFit: () => {
+      if (typeof inner.axis_fit !== 'function') return undefined;
+      return JSON.parse(inner.axis_fit());
+    },
     // Newline-delimited JSON of the raw accel/gyro/mag log (mobile-imu-core's
     // export_jsonl(), the contract `tests/test_web_export_contract.py` pins).
     // Unlike `finish`/`finishTrajectory`/`finishPtScore`, this has no
@@ -205,6 +215,9 @@ export function createWorkerHandler() {
               // Null here means NOT MEASURED, and the record keeps that
               // distinction rather than defaulting it to zero.
               lateralMotion: session.lateralMotion(),
+              // undefined = an older wasm without the export. The far end
+              // carries it as undefined and the record omits the key.
+              axisFit: session.axisFit(),
               provenance: scoringProvenance() }
           : { type: 'error', reason: 'unscorable', request: 'finish' });
       } else if (m.type === 'reference') {

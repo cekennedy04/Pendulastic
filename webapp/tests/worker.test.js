@@ -383,3 +383,52 @@ test('every error reply names the request it answers', async () => {
   assert.equal(errors[0].request, 'export');
   assert.deepEqual(errors[1], { type: 'error', reason: 'unscorable', request: 'finish' });
 });
+// ---- the flexion-axis fit's report and flags (flags only) -------------------
+
+// 100 Hz samples in the 7-float wire layout for (n, [gx, gy, gz]) segments.
+function gyroSegments(segs) {
+  const flat = [];
+  let i = 0;
+  for (const [n, g] of segs) {
+    for (let k = 0; k < n; k++, i++) flat.push(i * 10, 0, 0, 9.81, g[0], g[1], g[2]);
+  }
+  return Float64Array.from(flat);
+}
+
+// A hold, a swing about x that dies, then (optionally) handling about y.
+function swingThenHandling(handling) {
+  const segs = [[250, [0, 0, 0]]];
+  for (let k = 0; k < 6; k++) segs.push([45, [3.0 * 0.85 ** k * (k % 2 === 0 ? 1 : -1), 0, 0]]);
+  segs.push([150, [0, 0, 0]]);
+  if (handling) segs.push([150, [0, 3.0, 0]]);
+  segs.push([150, [0, 0, 0]]);
+  return gyroSegments(segs);
+}
+
+test('finish posts the axis fit report, with no flags on a clean swing', async () => {
+  const handle = createWorkerHandler();
+  const posted = [];
+  const post = (msg) => posted.push(msg);
+  await handle({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.3, wasmSource } }, post);
+  await handle({ type: 'batch', buf: swingThenHandling(false).buffer }, post);
+  await handle({ type: 'finish' }, post);
+  const result = posted.find((m) => m.type === 'result');
+  assert.ok(result, 'the synthetic swing must be scorable');
+  assert.deepEqual(Object.keys(result.axisFit).sort(),
+    ['closed', 'flags', 'late_energy_ratio', 'late_n', 'max_span_s', 'n_fit']);
+  assert.equal(result.axisFit.n_fit, 270);
+  assert.equal(result.axisFit.closed, true);
+  assert.deepEqual(result.axisFit.flags, []);
+});
+
+test('handling after the swing settled is flagged, and the fit is still the swing', async () => {
+  const clean = await createSession({ beta: 0.041, emaAlpha: 0.3, wasmSource });
+  clean.pushBatch(swingThenHandling(false));
+  const handled = await createSession({ beta: 0.041, emaAlpha: 0.3, wasmSource });
+  handled.pushBatch(swingThenHandling(true));
+  const fit = handled.axisFit();
+  assert.deepEqual(fit.flags, ['motion_after_swing_settled']);
+  assert.equal(fit.late_n, 150);
+  assert.equal(fit.n_fit, clean.axisFit().n_fit, 'the handling is outside the fit');
+  assert.ok(handled.finish(), 'a flagged trial still scores: the flag never refuses one');
+});
