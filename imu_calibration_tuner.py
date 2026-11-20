@@ -493,7 +493,11 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
             # The old 0.5 s bound silently substituted a constant for any
             # stream slower than 2 Hz -- see on_gyro()'s comment for the
             # live-trial measurement that found it.
-            raw_dt = dt
+            # The measured interval, for the axis fit's report only. Known
+            # only when BOTH stamps are real: a sample with no stamp leaves
+            # last_ts at 0, and the next one's difference from 0 is its
+            # absolute timestamp, not an interval.
+            raw_dt = dt if st.last_ts else None
             if dt is None or not (0.0 < dt <= _MAX_GYRO_DT_S):
                 dt = _NOMINAL_GYRO_DT_S
             st.last_ts = ts

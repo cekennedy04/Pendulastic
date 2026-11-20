@@ -318,11 +318,16 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
             Sensor::Gyro => {
                 // The interval as measured, for the axis fit's report only:
                 // a dropout counts in full there, where `dt` is bounded.
+                // Known only when BOTH stamps are real: a sample with no
+                // stamp leaves `last_ts` at 0, and the next one's difference
+                // from 0 is its absolute timestamp, not an interval.
                 let mut raw_dt: Option<f64> = None;
                 let dt = match last_ts {
                     Some(prev) if s.ts_ms != 0 => {
                         let d = (s.ts_ms - prev) as f64 / 1000.0;
-                        raw_dt = Some(d);
+                        if prev != 0 {
+                            raw_dt = Some(d);
+                        }
                         if d > 0.0 && d <= MAX_GYRO_DT_S {
                             d
                         } else {

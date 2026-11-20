@@ -346,3 +346,37 @@ fn each_known_regression_of_the_stop_rule_is_flagged() {
     case!("REF_FLAG_GAP", REF_FLAG_GAP_RAW_T, REF_FLAG_GAP_RAW_TS_MS, REF_FLAG_GAP_RAW_ACCEL,
           REF_FLAG_GAP_RAW_GYRO, REF_FLAG_GAP_T, REF_FLAG_GAP_ANG, "axis_fit_spans_quiet");
 }
+
+/// Independent review of the flags, 2026-11-20. A gyro sample stamped 0 left
+/// the previous-stamp at 0, and the next sample's difference from 0 (its
+/// absolute timestamp) went into the span: a pause of 1.7e9 s on an ordinary
+/// swing. An unknown interval counts as the nominal 10 ms, and the session
+/// reports what `replay` does.
+#[test]
+fn a_sample_with_no_timestamp_does_not_count_as_a_gap() {
+    use mobile_imu_core::session::TrialSession;
+    let ts: Vec<i64> = golden::REF_INPLANE_RAW_TS_MS.iter().map(|t| t + 1_763_000_000_000).collect();
+    let clean = log(golden::REF_INPLANE_RAW_T, &ts, golden::REF_INPLANE_RAW_ACCEL, golden::REF_INPLANE_RAW_GYRO);
+    let want = replay(&clean, &ReplayConfig::reference()).unwrap().axis_fit.unwrap();
+    assert!(want.flags().is_empty() && want.max_span_s < 0.5, "{want:?}");
+
+    let mut holed = clean.clone();
+    let mut k = 0;
+    for s in holed.iter_mut() {
+        // every third gyro sample of the swing loses its stamp
+        if s.sensor == Sensor::Gyro && s.t > 2.0 && s.t < 4.0 {
+            if k % 3 == 0 {
+                s.ts_ms = 0;
+            }
+            k += 1;
+        }
+    }
+    let got = replay(&holed, &ReplayConfig::reference()).unwrap().axis_fit.unwrap();
+    assert!(got.flags().is_empty() && got.max_span_s < 0.5, "{got:?}");
+
+    let mut sess = TrialSession::new(ReplayConfig::reference());
+    for s in &clean {
+        sess.push(*s);
+    }
+    assert_eq!(sess.axis_fit(), Some(want));
+}

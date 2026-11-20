@@ -244,27 +244,32 @@ class FlexAxisEstimator:
         axis fitted on something other than the swing:
 
         - axis_fit_weak_then_motion: the fit closed holding fewer than
-          QUIET_STOP_MIN_SAMPLES samples and qualifying motion arrived after
-          it. Typically brief motion at the zero, a hold of over two seconds,
-          then the real swing, which the axis never saw.
+          QUIET_STOP_MIN_SAMPLES samples and the qualifying motion after it
+          carried at least LATE_MOTION_ENERGY_RATIO times its energy.
+          Typically brief motion at the zero, a hold of over two seconds,
+          then the real swing, which the axis never saw. A stray sample or
+          two after a weak swing is not this.
         - motion_after_swing_settled: the fit closed and the qualifying
           motion that followed carried at least LATE_MOTION_ENERGY_RATIO times
           the energy of the fit (sum of squared rates). The leg or the phone
           was handled, or swung again, after the swing died. The axis is the
           first swing; the trace after it is not a pendulum drop.
-        - axis_fit_spans_quiet: the fit took a qualifying sample after
-          SPAN_QUIET_S or more without one, counted on measured time, so a
-          sample dropout counts in full. Two separate motions, or a gap in
-          the stream, may both be inside the fit.
+        - axis_fit_spans_quiet: two consecutive qualifying samples in the
+          fit are SPAN_QUIET_S or more apart (max_span_s is that interval,
+          so it includes the 10 ms of the sample that ends it), counted on
+          measured time, so a sample dropout counts in full. Two separate
+          motions, or a gap in the stream, may both be inside the fit. A
+          sample without a timestamp counts as the nominal 10 ms.
         """
         if self._quiet_stop is None or self._n == 0:
             return None
         fit_energy = float(np.trace(self._m))
         ratio = (self._late_energy / fit_energy) if fit_energy > 0.0 else 0.0
         flags = []
-        if self._closed and self._n < QUIET_STOP_MIN_SAMPLES and self._late_n > 0:
+        late = self._closed and self._late_n > 0 and ratio >= LATE_MOTION_ENERGY_RATIO
+        if late and self._n < QUIET_STOP_MIN_SAMPLES:
             flags.append("axis_fit_weak_then_motion")
-        if self._closed and self._late_n > 0 and ratio >= LATE_MOTION_ENERGY_RATIO:
+        if late:
             flags.append("motion_after_swing_settled")
         if self._max_span >= SPAN_QUIET_S:
             flags.append("axis_fit_spans_quiet")
@@ -323,19 +328,27 @@ class FlexAxisEstimator:
         Ignores sub-threshold samples and does nothing once committed, so
         callers can drive it unconditionally. Gravity is optional: without it
         the axis is simply not levelled."""
-        if self._committed and not self._closed:
+        if self._closed:
+            # Qualifying motion the closed fit leaves out. Counted for
+            # fit_report and nothing else; never raises, as the early return
+            # this replaces never did.
+            try:
+                late = np.asarray(v, dtype=float)
+            except (TypeError, ValueError):
+                return
+            if late.shape == (3,) and np.all(np.isfinite(late)):
+                mag = float(np.linalg.norm(late))
+                if mag >= self._threshold:
+                    self._late_n += 1
+                    self._late_energy += mag * mag
+            return
+        if self._committed:
             return
         v = np.asarray(v, dtype=float)
         if v.shape != (3,) or not np.all(np.isfinite(v)):
             return
         mag = float(np.linalg.norm(v))
         if mag < self._threshold:
-            return
-        if self._closed:
-            # Qualifying motion the closed fit leaves out. Counted for
-            # fit_report and nothing else.
-            self._late_n += 1
-            self._late_energy += mag * mag
             return
 
         if self._gravity is None and gravity is not None:

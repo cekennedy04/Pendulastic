@@ -1555,3 +1555,23 @@ def test_known_regression_a_dropout_inside_the_quiet_is_flagged():
     rep, cap, _ = _axis_fit_report(_gyro_segments(segs[:3] + [(280, _CALM)] + segs[4:]))
     assert abs(float(cap["flex_axis"][0])) > 0.999
     assert rep["flags"] == ["motion_after_swing_settled"]
+
+
+def test_a_sample_with_no_timestamp_does_not_count_as_a_gap():
+    """Independent review of the flags, 2026-11-20: a gyro sample stamped 0
+    left last_ts at 0, and the next sample's difference from 0 (its absolute
+    timestamp) went into the span, giving a pause of 1.7e9 s on an ordinary
+    swing. An unknown interval is the nominal 10 ms."""
+    log = _axis_fit_log()
+    for s in log:
+        s["phone_ts_ms"] += 1_763_000_000_000        # epoch milliseconds
+    clean, _, clean_angle = _axis_fit_report(log)
+    assert clean["flags"] == [] and clean["max_span_s"] < 0.5
+    gyro = [s for s in log if s["sensor"] == "gyro"]
+    gyro[300]["phone_ts_ms"] = 0                     # mid-swing
+    rep, _, angle = _axis_fit_report(log)
+    assert rep["flags"] == [] and rep["max_span_s"] == pytest.approx(clean["max_span_s"], abs=0.02)
+    for s in gyro[260:400:3]:
+        s["phone_ts_ms"] = 0
+    rep, _, _ = _axis_fit_report(log)
+    assert rep["flags"] == [] and rep["max_span_s"] < 0.5

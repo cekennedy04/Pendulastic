@@ -425,7 +425,7 @@ test('a text-backed file is unaffected by the blob support', () => {
 test('the manifest schema is v7', () => {
   const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials });
   const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
-  assert.equal(m.schema, 'pendulastic/session-export/v7');
+  assert.equal(m.schema, 'pendulastic/session-export/v8');
 });
 
 // The shared masTrials fixture is deliberately legacy-shaped, to exercise the

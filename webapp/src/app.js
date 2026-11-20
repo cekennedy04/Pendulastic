@@ -1189,6 +1189,13 @@ if (typeof document !== 'undefined') {
   // default; both are shown and hidden together, and every new trial starts
   // with the disclosure closed again.
   function setResultVisible(visible) {
+    // The two capture-quality notes sit outside #result. Hiding the result
+    // clears them, or a flagged trial's "Check this trial" would stay on
+    // screen under the next trial (independent review, 2026-11-20).
+    if (!visible) {
+      renderLateral(undefined);
+      renderAxisFit(undefined);
+    }
     el('result').hidden = !visible;
     const details = el('result-details');
     if (details) {
@@ -2342,6 +2349,10 @@ if (typeof document !== 'undefined') {
     if (action.kind === 'unscorable') {
       g.className = 'unscorable';
       g.textContent = 'NOT SCORABLE\nno usable swing -- kept for review';
+      // Nothing was scored: the previous trial's quality notes must not sit
+      // under this one.
+      renderLateral(undefined);
+      renderAxisFit(undefined);
       // Persist the unscored recording rather than dropping it (2026-09-15):
       // "measure everything, flag out-of-range, never exclude" at the most
       // basic level -- the raw accel+gyro is exactly what the SSR sensor

@@ -800,7 +800,7 @@ def main():
         ("REF_FLAG_BRIEF", [1.0, 0.0, 0.0], 45.0, 1.0, 1.2,
          "Brief motion at the zero 60 deg off the swing axis, a 2.3 s hold, then the swing."),
         ("REF_FLAG_EARLY", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
-         "26 fast samples about x, 0.9 s quiet, then motion about y: before the quiet second is up."),
+         "26 fast samples about x, then motion about y starting 0.8 s later: before the quiet second is up."),
         ("REF_FLAG_GAP", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
          "30 fast samples about x, a 2.5 s sample dropout, then motion about y."),
     ]
@@ -838,7 +838,10 @@ def main():
                 late=(2.0, 0.1, brief_dir, 2.0))
         elif tag in ("REF_FLAG_EARLY", "REF_FLAG_GAP"):
             n_cliff = 26 if tag == "REF_FLAG_EARLY" else 30
-            t_late = 2.0 + n_cliff / 100.0 + (0.9 if tag == "REF_FLAG_EARLY" else 3.1)
+            # EARLY: the half-sine about y takes about 0.08 s to reach
+            # 1 rad/s, so the fit sees about 0.88 s of quiet: clear of both
+            # SPAN_QUIET_S below it and QUIET_STOP_S above it (asserted).
+            t_late = 2.0 + n_cliff / 100.0 + (0.8 if tag == "REF_FLAG_EARLY" else 3.1)
             raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
                 axis, a0d, fhz, tau, total_s=t_late + 2.5, cliff=n_cliff,
                 late=(t_late, 1.0, [0.0, 1.0, 0.0], 4.0))
@@ -899,6 +902,9 @@ def main():
             assert e_y > e_x, f"{tag}: late motion {e_y:.0f} does not outweigh the swing {e_x:.0f}"
         rep = cap_ref["axis_fit"]
         assert rep is not None and rep["flags"] == want_flags[tag], f"{tag}: {rep}"
+        if tag == "REF_FLAG_EARLY":
+            from imu_flex_axis import SPAN_QUIET_S as _SPAN
+            assert _SPAN + 0.05 < rep["max_span_s"] < _QS - 0.05, f"{tag}: span {rep['max_span_s']}"
         if tag.startswith("REF_FLAG_"):
             # Each is a case the opening rule gets right and this one does not.
             cap_open = {}

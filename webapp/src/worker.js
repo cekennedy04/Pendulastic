@@ -215,8 +215,8 @@ export function createWorkerHandler() {
               // Null here means NOT MEASURED, and the record keeps that
               // distinction rather than defaulting it to zero.
               lateralMotion: session.lateralMotion(),
-              // undefined (older wasm) is dropped by structured clone, and
-              // the far end reads its absence as "not reported".
+              // undefined = an older wasm without the export. The far end
+              // carries it as undefined and the record omits the key.
               axisFit: session.axisFit(),
               provenance: scoringProvenance() }
           : { type: 'error', reason: 'unscorable', request: 'finish' });

@@ -226,24 +226,25 @@ test('a fit closed on a brief movement says the angles may be too small', () => 
   assert.match(s, /brief movement \(7 samples\)/);
   assert.match(s, /angles may be too small/);
   // The weaker statement is not repeated beside the stronger one.
-  assert.doesNotMatch(s, /after the swing had settled/);
+  assert.doesNotMatch(s, /the axis is from the movement before it/);
 });
 
 test('movement after the swing settled is reported on its own', () => {
   const s = axisFitNote(fitReport(['motion_after_swing_settled'], { late_n: 383, late_energy_ratio: 11.8 }));
-  assert.match(s, /moved again after the swing had settled/);
-  assert.doesNotMatch(s, /too small|paused/);
+  assert.match(s, /more movement after the swing axis was set/);
+  // It does not claim the swing had settled: a fit filled to its cap closes mid-swing.
+  assert.doesNotMatch(s, /too small|paused|settled|first swing/);
 });
 
 test('a fit that spans a pause or a sample gap gives the length', () => {
   const s = axisFitNote(fitReport(['axis_fit_spans_quiet'], { closed: false, max_span_s: 3.2 }));
-  assert.match(s, /paused of 3\.2 s, or samples were lost/);
+  assert.match(s, /paused for 3\.2 s, or samples were lost/);
   assert.match(s, /may mix two movements/);
 });
 
 test('two flags make one sentence, and none of them is a verdict', () => {
   const s = axisFitNote(fitReport(['motion_after_swing_settled', 'axis_fit_spans_quiet'], { max_span_s: 1.6 }));
-  assert.match(s, /settled; .*paused of 1\.6 s/);
+  assert.match(s, /before it; .*paused for 1\.6 s/);
   assert.equal(s.split('Check this trial').length, 2);
   assert.doesNotMatch(s, /invalid|rejected|discard|fail/i);
 });

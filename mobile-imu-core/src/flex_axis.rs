@@ -115,16 +115,19 @@ pub struct AxisFitReport {
     pub late_n: usize,
     /// Their energy (sum of squared rates) over the fit's.
     pub late_energy_ratio: f64,
-    /// Longest measured stretch without a qualifying sample that the fit
-    /// went on to span, seconds. A sample dropout counts in full.
+    /// Longest measured interval between two consecutive qualifying samples
+    /// in the fit, seconds (so it includes the 10 ms of the sample that ends
+    /// it). A sample dropout counts in full; a sample without a timestamp
+    /// counts as the nominal 10 ms.
     pub max_span_s: f64,
 }
 
 impl AxisFitReport {
-    /// The fit closed under [`QUIET_STOP_MIN_SAMPLES`] and qualifying motion
-    /// arrived after it.
+    /// The fit closed under [`QUIET_STOP_MIN_SAMPLES`] and the motion after
+    /// it carried at least [`LATE_MOTION_ENERGY_RATIO`] times its energy. A
+    /// stray sample or two after a weak swing is not this.
     pub fn weak_then_motion(&self) -> bool {
-        self.closed && self.n_fit < QUIET_STOP_MIN_SAMPLES && self.late_n > 0
+        self.n_fit < QUIET_STOP_MIN_SAMPLES && self.motion_after_swing_settled()
     }
 
     /// The fit closed and the motion after it carried at least
@@ -133,7 +136,8 @@ impl AxisFitReport {
         self.closed && self.late_n > 0 && self.late_energy_ratio >= LATE_MOTION_ENERGY_RATIO
     }
 
-    /// The fit took a qualifying sample after [`SPAN_QUIET_S`] without one.
+    /// Two consecutive qualifying samples in the fit are [`SPAN_QUIET_S`]
+    /// or more apart.
     pub fn spans_quiet(&self) -> bool {
         self.max_span_s >= SPAN_QUIET_S
     }
@@ -335,7 +339,19 @@ impl FlexAxisEstimator {
     /// callers can drive it unconditionally. Gravity is optional: without it
     /// the axis is simply not levelled.
     pub fn update(&mut self, v: Vec3, gravity: Option<Vec3>) {
-        if self.committed && !self.closed {
+        if self.closed {
+            // Qualifying motion the closed fit leaves out. Counted for
+            // `fit_report` and nothing else.
+            if is_finite3(v) {
+                let mag = norm3(v);
+                if mag >= self.threshold {
+                    self.late_n += 1;
+                    self.late_energy += mag * mag;
+                }
+            }
+            return;
+        }
+        if self.committed {
             return;
         }
         if !is_finite3(v) {
@@ -343,13 +359,6 @@ impl FlexAxisEstimator {
         }
         let mag = norm3(v);
         if mag < self.threshold {
-            return;
-        }
-        if self.closed {
-            // Qualifying motion the closed fit leaves out. Counted for
-            // `fit_report` and nothing else.
-            self.late_n += 1;
-            self.late_energy += mag * mag;
             return;
         }
 
@@ -1171,6 +1180,42 @@ mod fit_report_tests {
         let r = e.fit_report().unwrap();
         assert!((r.late_energy_ratio - 202.0 / 900.0).abs() < 1e-12, "{r:?}");
         assert_eq!(r.flags(), vec!["motion_after_swing_settled"]);
+    }
+
+    /// Independent review of the flags, 2026-11-20: one sample at the
+    /// threshold after a weak fit used to raise the weak flag.
+    #[test]
+    fn a_stray_sample_after_a_weak_fit_is_not_flagged() {
+        let mut e = rec();
+        feed(&mut e, 24, scaled(X, 1.5));
+        feed(&mut e, 300, [0.0; 3]);
+        feed(&mut e, 1, scaled(Y, 1.0));
+        let r = e.fit_report().unwrap();
+        assert!(r.closed && r.n_fit == 24 && r.late_n == 1, "{r:?}");
+        assert!((r.late_energy_ratio - 1.0 / 54.0).abs() < 1e-12, "{r:?}");
+        assert!(r.flags().is_empty(), "{r:?}");
+        feed(&mut e, 5, scaled(Y, 1.1)); // 7.05 / 54: past the ratio
+        assert_eq!(e.fit_report().unwrap().flags(),
+                   vec!["axis_fit_weak_then_motion", "motion_after_swing_settled"]);
+    }
+
+    /// The late-motion branch only counts: the axis after any amount of late
+    /// motion is the axis of an estimator that never saw it, to the bit.
+    #[test]
+    fn motion_after_the_fit_closed_never_reaches_the_axis() {
+        let (mut a, mut b) = (rec(), rec());
+        for e in [&mut a, &mut b] {
+            feed(e, 60, [1.7, 0.4, 0.1]);
+            feed(e, 150, [0.0; 3]);
+        }
+        assert!(a.closed() && b.closed());
+        feed(&mut a, 400, [0.2, 5.0, 0.3]);
+        a.update([f64::NAN, 0.0, 0.0], None);
+        a.finalize();
+        b.finalize();
+        assert_eq!(a.axis(), b.axis());
+        assert_eq!((a.n_samples(), b.n_samples()), (60, 60));
+        assert_eq!((a.fit_report().unwrap().late_n, b.fit_report().unwrap().late_n), (400, 0));
     }
 
     /// The counters are a report: with and without them the axis is the same

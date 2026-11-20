@@ -364,22 +364,24 @@ scores move. "Not verified" is stated, never implied.
   few degrees; (2) other motion arriving before the quiet second is up reaches the axis at
   any sample count (`main` stopped at 25 samples); (3) a sample dropout over 2 s inside the
   quiet does not count towards it, so the stop does not fire. Not fixed; flagged (next bullet).
-- **Axis-fit quality flags (2026-11-20; branch `feat/axis-fit-late-motion-flag`, stacked on
-  #130, PR open, not merged):** flags only, no change to any angle or score (corpus: angle
-  and axis bit-identical on 164 of 164 scored logs). The scored replay now reports how the
-  axis fit ended (`FlexAxisEstimator.fit_report` in Python, `AxisFitReport` in Rust,
-  `axis_fit` on the app's trial record and export, one line on the result screen). Three
-  codes: `axis_fit_weak_then_motion` (the fit closed under 25 samples and motion followed:
-  regression 1), `motion_after_swing_settled` (the fit closed and later motion carried at
-  least 0.1 of its energy), `axis_fit_spans_quiet` (the fit took a sample after 0.8 s or
-  more without one, dropouts counted in full: regressions 2 and 3). On the corpus 7 of 164
-  scored logs fire, 5 of 146 paired, all `motion_after_swing_settled`; the five fits with
-  20 to 24 samples do not fire. Rust and Python agree on all 164. The thresholds (0.1 and
-  0.8 s) were set on this corpus and are not validated on any other data. A second motion
-  that follows the first by less than 0.8 s is not flagged.
   The live trace, the desktop server and every tool that replays with the local
   `imu_calibration_config.json` or a hard-coded config still use the old rule.
   `lateral_motion` still measures against the old axis. Trends break at the footing change.
+- **Axis-fit quality flags (2026-11-20; branch `feat/axis-fit-late-motion-flag`, PR #132,
+  stacked on #130, open, not merged):** flags only, no change to any angle or score (corpus:
+  angle and axis bit-identical on 164 of 164 scored logs). The scored replay now reports how
+  the axis fit ended (`FlexAxisEstimator.fit_report` in Python, `AxisFitReport` in Rust,
+  `axis_fit` on the app's trial record and export (schema v8), one line on the result
+  screen). Three codes: `axis_fit_weak_then_motion` (the fit closed under 25 samples and
+  the motion after it carried at least 0.1 of its energy: regression 1),
+  `motion_after_swing_settled` (the same test at any sample count), `axis_fit_spans_quiet`
+  (two consecutive fast samples in the fit 0.8 s or more apart, dropouts counted in full:
+  regressions 2 and 3). On the corpus 7 of 164 scored logs fire, 5 of 146 paired, all
+  `motion_after_swing_settled`; the five fits with 20 to 24 samples have no later motion
+  and do not fire. Rust and Python agree on all 164. The thresholds (0.1 and 0.8 s) were
+  set on this corpus and are not validated on any other data. Not flagged: a second motion
+  that follows the first by less than 0.8 s, and a pause or dropout with no fast sample
+  after it. Independent review done; its findings are fixed or listed in the PR.
 - **Consequence:** phone-derived corpus numbers computed before this merges (including
   `docs/reports/2026-11-18-imu-vs-optitrack-validation.md`) are on the old footing.
 

@@ -623,3 +623,37 @@ def test_the_report_does_not_touch_the_fit():
     _feed(a, 5, (2.0, 0.0, 0.0))
     rep = a.fit_report()
     assert (rep["n_fit"], rep["late_n"], rep["max_span_s"]) == (5, 0, 0.01)
+
+
+def test_a_stray_sample_after_a_weak_fit_is_not_flagged():
+    """Independent review of the flags, 2026-11-20: 24 samples, a long quiet,
+    then ONE sample at the threshold used to read "the main movement came
+    after it". The weak flag needs the same energy as the general one."""
+    est = _rec()
+    _feed(est, 24, (1.5, 0.0, 0.0))
+    _feed(est, 300, _STILL)
+    _feed(est, 1, (0.0, 1.0, 0.0))
+    rep = est.fit_report()
+    assert rep["closed"] and rep["n_fit"] == 24 and rep["late_n"] == 1
+    assert rep["late_energy_ratio"] == pytest.approx(1.0 / 54.0, abs=1e-12)
+    assert rep["flags"] == []
+    _feed(est, 5, (0.0, 1.1, 0.0))      # 7.05 / 54: past the ratio
+    assert est.fit_report()["flags"] == ["axis_fit_weak_then_motion", "motion_after_swing_settled"]
+
+
+def test_motion_after_the_fit_closed_never_reaches_the_axis():
+    """The late-motion branch only counts. The axis after any amount of late
+    motion is the axis of an estimator that never saw it, to the bit, and bad
+    input after the close is ignored as it was before the report existed."""
+    a, b = _rec(), _rec()
+    for est in (a, b):
+        _feed(est, 60, (1.7, 0.4, 0.1))
+        _feed(est, 150, _STILL)
+    assert a.closed and b.closed
+    _feed(a, 400, (0.2, 5.0, 0.3))
+    for bad in ("abc", None, [1.0, 2.0], [float("nan"), 0.0, 0.0]):
+        a.update(bad)
+    a.finalize()
+    b.finalize()
+    assert np.array_equal(a.axis, b.axis) and a.n_samples == b.n_samples == 60
+    assert a.fit_report()["late_n"] == 400 and b.fit_report()["late_n"] == 0

@@ -241,10 +241,12 @@ impl TrialSession {
         Ok((r, p))
     }
 
-    /// Capture quality: how the scored replay's axis fit ended and what it
-    /// left out (`AxisFitReport`). `None` when the trial does not replay or
-    /// the fit took no sample. Flags only: it reads the same replay `finish`
-    /// scores and changes nothing in it.
+    /// Capture quality: how the axis fit of the automatic replay ended and
+    /// what it left out (`AxisFitReport`). `None` when the trial does not
+    /// replay or the fit took no sample. Flags only. It replays with the
+    /// session's own config, which is what `finish(None)` scores; under a
+    /// `release_override` the scored fit starts elsewhere and this does not
+    /// describe it. The wasm layer never passes an override.
     pub fn axis_fit(&self) -> Option<AxisFitReport> {
         replay(&self.samples, &self.cfg).ok()?.axis_fit
     }
