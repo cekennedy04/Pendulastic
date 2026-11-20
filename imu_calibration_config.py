@@ -40,12 +40,22 @@ DEFAULT_CONFIG = {
 #: deliberately left alone so desktop paths do not move. Replay with
 #: tick_s=imu_calibration_tuner.ANALYSIS_TICK_S. The phone core scores on the
 #: same footing from crate 0.4.0 (mobile-imu-core ReplayConfig::reference(),
-#: SCORING_FOOTING "ref-100hz-ema0.5-flex"); tests/test_pt_zone_parity.py pins
-#: the two together.
+#: SCORING_FOOTING); tests/test_pt_zone_parity.py pins the two together.
+#:
+#: "flex_axis_fit": "recording" (2026-11-19, crate 0.5.0, footing
+#: "ref-100hz-ema0.5-flexrec", was "ref-100hz-ema0.5-flex"): the flexion axis
+#: is fitted on every sample from the zero until the swing has died (one
+#: second of quiet; see imu_flex_axis.QUIET_STOP_S and, for a fit with few
+#: fast samples, QUIET_STOP_MIN_SAMPLES / QUIET_STOP_WEAK_S) and is not
+#: levelled. It moves every replayed angle, so phone-derived corpus numbers
+#: from before that date are on the old footing. A config without the key
+#: replays the old way ("opening": 25 samples, levelled), which is what the
+#: live desktop server still does.
 REFERENCE_REPLAY_CONFIG = {
     "beta": 0.041,
     "ema_alpha": 0.5,
     "flex_axis_capture": True,
+    "flex_axis_fit": "recording",
     "gravity_seed": True,
     "method": "relative",
 }
@@ -60,6 +70,10 @@ _REQUIRED_TYPES = {
 
 def _is_valid(cfg) -> bool:
     if not isinstance(cfg, dict):
+        return False
+    # Optional; a value replay_trial would refuse makes the file invalid here
+    # rather than raising in the middle of a replay.
+    if cfg.get("flex_axis_fit", "opening") not in ("opening", "recording"):
         return False
     for key, types in _REQUIRED_TYPES.items():
         if key not in cfg or not isinstance(cfg[key], types):

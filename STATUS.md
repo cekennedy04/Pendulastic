@@ -342,6 +342,35 @@ scores move. "Not verified" is stated, never implied.
   is stale. Records made after the live app is redeployed carry `ALGORITHM_VERSION`
   `0.2.0+...`. Independent review of the split: `docs/seed-fix-split-review`.
 
+- **Flexion axis fitted on the whole swing (owner approved 2026-11-19; branch
+  `fix/flex-axis-whole-recording`, PR #130 open, not merged; core 0.5.0, footing
+  `ref-100hz-ema0.5-flexrec`):** the scored replay, in Rust and in the Python reference, now
+  fits the flexion axis on every sample from the zero until the swing has died and does not
+  level it. Before, it used the first 25 samples (the release itself) levelled against an
+  accelerometer sample taken with the shank already falling. Against shank-plate rotation on
+  the paired trials: axis error median 21.1 to 10.9 deg (146 trials), gain 0.85 to 0.93 (145),
+  RMSE median 8.7 to 4.8 deg (p90 22.3 to 9.9; 132). It moves every app angle: A0 by a median +2.1 deg,
+  13 of 144 PT scores by more than 0.1, 8 of 132 verdicts; one trial that scored no longer
+  does. The fit closes after one second under 1 rad/s, added after testing what a recording
+  that runs on does to the axis; that stop is an addition to the option the owner approved. A
+  fit with fewer than 25 fast samples when that second arrives stays open but takes no more
+  than 25 in total (what the old rule took), and closes after two seconds of quiet (pre-merge
+  review fix, 2026-11-19: with no close below 50 samples a weak swing followed by handling
+  gave an axis up to 90 deg off).
+  **Known regressions against `main`, synthetic only, none in the corpus (independent review
+  of 8d6db26, 2026-11-20; numbers in PR #130):** (1) brief motion at the zero, a hold over
+  2 s, then a normal swing: the fit closes on the brief motion and the axis is its direction
+  (30 deg off: still graded; 60: refused; 90: no scorable swing), where `main` is within a
+  few degrees; (2) other motion arriving before the quiet second is up reaches the axis at
+  any sample count (`main` stopped at 25 samples); (3) a sample dropout over 2 s inside the
+  quiet does not count towards it, so the stop does not fire. Mitigation proposed as a
+  quality flag in a separate PR stacked on #130; not fixed here.
+  The live trace, the desktop server and every tool that replays with the local
+  `imu_calibration_config.json` or a hard-coded config still use the old rule.
+  `lateral_motion` still measures against the old axis. Trends break at the footing change.
+- **Consequence:** phone-derived corpus numbers computed before this merges (including
+  `docs/reports/2026-11-18-imu-vs-optitrack-validation.md`) are on the old footing.
+
 ### 5. OptiTrack / RMSE validation — IN REVIEW (loader fix)
 - **Canonical branch:** `main` (#81, #88, #125 merged). Open: `fix/optitrack-hinge-axis-refit`
   (hinge axis fix in `optitrack_knee_axis`, two quality flags, sensitivity rows, and the
@@ -359,7 +388,8 @@ scores move. "Not verified" is stated, never implied.
   2026-11-18).
 - **Stale:** every OptiTrack amplitude, polarity and PT score computed before the loader fix,
   and every OptiTrack PT score computed from a curve with dropped frames.
-- **Proposed, not started:** app flexion-axis capture; the options in the diagnosis report.
+- **Proposed, not started:** the options in the diagnosis report. (App flexion-axis capture: see the
+  whole-swing axis entry under workstream 4.)
 - **Entry points:** `batch_imu_vs_optitrack_rmse.py`, `rmse_pipeline_common.py`.
 - **Gaps:** the RMSE gate compares only the active swing window, so it could not see the seed bug;
   do not treat it as a sufficient gate for filter changes. The result "AHRS floor has zero effect on

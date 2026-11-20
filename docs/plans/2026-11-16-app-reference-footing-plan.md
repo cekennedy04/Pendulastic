@@ -5,6 +5,12 @@ Supersedes: none. Owner decisions taken 2026-11-16: STATUS decision 2 (move the 
 reference footing), decision 4 (count oscillations from the first trough) and decision 7 (drop
 `omega_max_n`). The three land together under one score-formula version bump.
 
+Later change (2026-11-19, branch `fix/flex-axis-whole-recording`, core 0.5.0): the footing
+this plan names `ref-100hz-ema0.5-flex` became `ref-100hz-ema0.5-flexrec`. The flexion axis is
+now fitted on the whole swing and not levelled; section 3.1's rule for where the axis feed
+starts still holds, its 25-sample commit no longer does on this footing. See `STATUS.md`,
+workstream 4.
+
 Status of this document: plan only, revised after an independent review (2026-11-16). Nothing
 below is implemented. The numbers in section 2 come
 from a Python-only feasibility spike (section 2.1); the Rust core has not been run on any of it.

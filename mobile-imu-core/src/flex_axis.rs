@@ -22,6 +22,11 @@
 //! axis immediately (so there is never a window with no axis at all), and
 //! commits a refined estimate after [`MIN_COMMIT_SAMPLES`] qualifying samples.
 //!
+//! A scored replay is not live: it has the whole recording. From crate 0.5.0
+//! it uses [`FlexAxisEstimator::whole_recording`], which accumulates the same
+//! second moment over the whole swing, closes after [`QUIET_STOP_S`] of quiet,
+//! and does not level the result. The live trace keeps the rule above.
+//!
 //! The vectors are **not** mean-centred: a rotation axis is a direction the
 //! gyro vector lies *along* (in both signs across an oscillation), so the raw
 //! second moment is the correct quantity, not the covariance about the mean.
@@ -62,6 +67,31 @@ pub const MIN_COMMIT_SAMPLES: usize = 25;
 /// `0.5` => 30° off horizontal.
 pub const MAX_GRAVITY_TILT_COS: f64 = 0.5;
 
+/// Whole-recording fit only: once the gyro has stayed under the threshold for
+/// this long after the first qualifying sample, the fit is closed and later
+/// samples are ignored. A swing passes under 1 rad/s only briefly at each
+/// reversal, so a second of quiet means the swing is over and whatever moves
+/// the phone afterwards (the leg lifted back, the phone unstrapped) is not the
+/// swing. Mirrors `QUIET_STOP_S` in `imu_flex_axis.py`, where the test that
+/// set it is described. The quiet clock is the sum of the `dt` the filter
+/// integrates, so a sample with a missing or implausible timestamp counts as
+/// the nominal 10 ms.
+pub const QUIET_STOP_S: f64 = 1.0;
+
+/// A whole-recording fit with fewer qualifying samples than this when the
+/// quiet second arrives does not close: it may be a let-go transient with the
+/// swing still to come (a leg caught just after release). But it may equally
+/// be a weak swing that is over, so from then on it takes no more than this
+/// many samples in total, which is what the opening rule would have taken.
+/// Late handling can then get in no further than it could under the opening
+/// rule. Mirrors `QUIET_STOP_MIN_SAMPLES` in `imu_flex_axis.py`, where the two
+/// cases and their measured results are described.
+pub const QUIET_STOP_MIN_SAMPLES: usize = MIN_COMMIT_SAMPLES;
+
+/// ...and a fit below that count closes anyway once the quiet has lasted this
+/// long. Mirrors `QUIET_STOP_WEAK_S` in `imu_flex_axis.py`.
+pub const QUIET_STOP_WEAK_S: f64 = 2.0;
+
 /// Online principal-axis estimator. Feed it raw gyro vectors via
 /// [`FlexAxisEstimator::update`]; read [`FlexAxisEstimator::axis`] for the
 /// current best estimate (`None` until the first above-threshold sample) and
@@ -78,6 +108,16 @@ pub struct FlexAxisEstimator {
     first: Option<Vec3>,
     gravity: Option<Vec3>,
     leveled: bool,
+    /// Whether a commit levels the axis against gravity. Off for
+    /// [`FlexAxisEstimator::whole_recording`].
+    level: bool,
+    /// Quiet time that closes the fit; `None` for the opening fit.
+    quiet_stop: Option<f64>,
+    quiet: f64,
+    closed: bool,
+    /// Set when a quiet second found the fit under
+    /// [`QUIET_STOP_MIN_SAMPLES`]: it then closes on reaching that count.
+    capped: bool,
 }
 
 impl Default for FlexAxisEstimator {
@@ -106,6 +146,63 @@ impl FlexAxisEstimator {
             first: None,
             gravity: None,
             leveled: false,
+            level: true,
+            quiet_stop: None,
+            quiet: 0.0,
+            closed: false,
+            capped: false,
+        }
+    }
+
+    /// The estimator a SCORED REPLAY uses: fed every gyro sample from the zero
+    /// until the swing has died ([`QUIET_STOP_S`] of quiet, reported through
+    /// [`FlexAxisEstimator::quiet`]) or the recording ends, committed once by
+    /// [`FlexAxisEstimator::finalize`], and not levelled. Mirrors
+    /// `FlexAxisEstimator.whole_recording` in `imu_flex_axis.py`.
+    ///
+    /// Why it differs from the live rule: on the paired corpus (2026-11-19)
+    /// the live rule's axis is a median 21.1° from the axis the phone actually
+    /// turned about, and this one 10.9°. The numbers for each ingredient
+    /// (window length, levelling) and what not levelling gives up are in the
+    /// Python docstring. The live trace cannot look ahead and keeps the
+    /// 25-sample rule.
+    pub fn whole_recording(threshold: f64) -> Self {
+        Self { level: false, quiet_stop: Some(QUIET_STOP_S), ..Self::new(threshold, usize::MAX) }
+    }
+
+    /// True once a whole-recording fit has stopped taking samples.
+    pub fn closed(&self) -> bool {
+        self.closed
+    }
+
+    /// Report `dt` seconds spent under the threshold. Only a whole-recording
+    /// fit that has a qualifying sample counts it. When the quiet since the
+    /// last qualifying sample reaches [`QUIET_STOP_S`] the fit closes if it
+    /// has [`QUIET_STOP_MIN_SAMPLES`] samples; with fewer it stays open but
+    /// will take no more than that many in total, and closes outright if the
+    /// quiet reaches [`QUIET_STOP_WEAK_S`].
+    pub fn quiet(&mut self, dt: f64) {
+        let Some(limit) = self.quiet_stop else { return };
+        if self.n == 0 || self.closed || !(dt.is_finite() && dt > 0.0) {
+            return;
+        }
+        self.quiet += dt;
+        if self.quiet < limit {
+            return;
+        }
+        if self.n >= QUIET_STOP_MIN_SAMPLES || self.quiet >= QUIET_STOP_WEAK_S {
+            self.closed = true;
+        } else {
+            self.capped = true;
+        }
+    }
+
+    /// Commit on whatever has been accumulated. A no-op if already committed
+    /// or nothing qualified (the axis then stays `None`). With a single
+    /// qualifying sample the result is that sample's direction.
+    pub fn finalize(&mut self) {
+        if !self.committed && self.n > 0 {
+            self.commit();
         }
     }
 
@@ -137,7 +234,7 @@ impl FlexAxisEstimator {
     /// callers can drive it unconditionally. Gravity is optional: without it
     /// the axis is simply not levelled.
     pub fn update(&mut self, v: Vec3, gravity: Option<Vec3>) {
-        if self.committed {
+        if self.committed || self.closed {
             return;
         }
         if !is_finite3(v) {
@@ -177,6 +274,10 @@ impl FlexAxisEstimator {
             }
         }
         self.n += 1;
+        self.quiet = 0.0;
+        if self.capped && self.n >= QUIET_STOP_MIN_SAMPLES {
+            self.closed = true;
+        }
         if self.n >= self.min_samples {
             self.commit();
         }
@@ -195,7 +296,7 @@ impl FlexAxisEstimator {
         // Level it: drop the component along gravity, so the axis lies in the
         // horizontal plane the knee actually flexes about. Skipped when the
         // axis is too far from horizontal to trust the assumption.
-        if let Some(g) = self.gravity {
+        if let Some(g) = self.gravity.filter(|_| self.level) {
             let along = dot3(axis, g);
             if along.abs() <= MAX_GRAVITY_TILT_COS {
                 let leveled = [
@@ -235,6 +336,9 @@ impl FlexAxisEstimator {
         self.first = None;
         self.gravity = None;
         self.leveled = false;
+        self.quiet = 0.0;
+        self.closed = false;
+        self.capped = false;
     }
 }
 
@@ -695,4 +799,141 @@ pub fn lateral_motion(vectors: &[Vec3], axis: Option<Vec3>, threshold: f64) -> O
         fraction: perp_sum / total_sum,
         peak_deg_s: peak.to_degrees(),
     })
+}
+
+#[cfg(test)]
+mod whole_recording_tests {
+    use super::*;
+
+    #[test]
+    fn it_commits_only_on_finalize_and_is_not_levelled() {
+        let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+        // 20 deg out of horizontal, inside the guard: the opening fit would level this.
+        let tilt = 20f64.to_radians();
+        let v = [2.0 * tilt.cos(), 0.0, 2.0 * tilt.sin()];
+        for _ in 0..200 {
+            e.update(v, Some([0.0, 0.0, 1.0]));
+        }
+        assert!(!e.committed());
+        assert_eq!(e.n_samples(), 200);
+        e.finalize();
+        assert!(e.committed() && !e.leveled());
+        let a = e.axis().unwrap();
+        assert!((a[2].abs() - tilt.sin()).abs() < 1e-9, "{a:?}");
+        e.finalize(); // idempotent
+        assert_eq!(e.axis().unwrap(), a);
+    }
+
+    #[test]
+    fn finalize_without_a_sample_leaves_no_axis() {
+        let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+        e.update([0.1, 0.0, 0.0], None);
+        e.finalize();
+        assert!(e.axis().is_none() && !e.committed());
+    }
+
+    #[test]
+    fn a_second_of_quiet_closes_the_fit_and_less_does_not() {
+        let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+        e.quiet(5.0); // before any sample: not counted
+        for _ in 0..QUIET_STOP_MIN_SAMPLES {
+            e.update([2.0, 0.0, 0.0], None);
+        }
+        for _ in 0..99 {
+            e.quiet(0.01);
+        }
+        assert!(!e.closed());
+        e.update([2.0, 0.0, 0.0], None); // a qualifying sample resets the quiet
+        for _ in 0..99 {
+            e.quiet(0.01);
+        }
+        e.quiet(f64::NAN);
+        e.quiet(-1.0);
+        assert!(!e.closed());
+        e.quiet(0.01);
+        assert!(e.closed());
+        let n = e.n_samples();
+        e.update([0.0, 9.0, 0.0], None);
+        assert_eq!(e.n_samples(), n);
+        e.finalize();
+        assert!(e.axis().unwrap()[0].abs() > 0.999);
+    }
+
+    /// Pre-merge review 2026-11-19 (F1): under the minimum the fit used to
+    /// stay open to the end of the recording, so late handling took the axis.
+    #[test]
+    fn a_weak_fit_takes_no_more_than_the_opening_rule_after_a_quiet_second() {
+        for n in [1usize, 10, 24] {
+            let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+            for _ in 0..n {
+                e.update([2.0, 0.0, 0.0], None);
+            }
+            for _ in 0..150 {
+                e.quiet(0.01); // 1.5 s: past QUIET_STOP_S, short of QUIET_STOP_WEAK_S
+            }
+            assert!(!e.closed(), "n={n}");
+            for _ in 0..200 {
+                e.update([0.0, 4.0, 0.0], None);
+            }
+            assert!(e.closed(), "n={n}");
+            assert_eq!(e.n_samples(), QUIET_STOP_MIN_SAMPLES, "n={n}");
+        }
+        // At the minimum the quiet second closes it outright.
+        let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+        for _ in 0..QUIET_STOP_MIN_SAMPLES {
+            e.update([2.0, 0.0, 0.0], None);
+        }
+        for _ in 0..150 {
+            e.quiet(0.01);
+        }
+        assert!(e.closed());
+        e.update([0.0, 4.0, 0.0], None);
+        e.finalize();
+        assert!(e.axis().unwrap()[0].abs() > 0.999);
+    }
+
+    #[test]
+    fn a_weak_fit_closes_after_the_longer_quiet() {
+        let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+        for _ in 0..10 {
+            e.update([2.0, 0.0, 0.0], None);
+        }
+        for _ in 0..199 {
+            e.quiet(0.01);
+        }
+        assert!(!e.closed());
+        e.quiet(0.02);
+        assert!(e.closed());
+        e.update([0.0, 4.0, 0.0], None);
+        e.finalize();
+        assert_eq!(e.n_samples(), 10);
+        assert!(e.axis().unwrap()[0].abs() > 0.999);
+    }
+
+    /// A quiet shorter than QUIET_STOP_S never caps: the reversals of a slow
+    /// swing must not limit the fit.
+    #[test]
+    fn short_quiets_do_not_cap_a_weak_fit() {
+        let mut e = FlexAxisEstimator::whole_recording(DEFAULT_THRESHOLD);
+        for _ in 0..20 {
+            for _ in 0..3 {
+                e.update([2.0, 0.0, 0.0], None);
+            }
+            for _ in 0..90 {
+                e.quiet(0.01);
+            }
+        }
+        assert!(!e.closed());
+        assert_eq!(e.n_samples(), 60);
+    }
+
+    #[test]
+    fn the_opening_fit_ignores_quiet() {
+        let mut e = FlexAxisEstimator::default();
+        e.update([2.0, 0.0, 0.0], None);
+        e.quiet(10.0);
+        assert!(!e.closed());
+        e.update([2.0, 0.0, 0.0], None);
+        assert_eq!(e.n_samples(), 2);
+    }
 }
