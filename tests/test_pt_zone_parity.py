@@ -449,3 +449,20 @@ def test_healthy_ref_is_identical_in_every_copy():
 
     cs_id = re.search(r'SCORE_FORMULA_ID = "([^"]+)"', cs).group(1)
     assert cs_id == pt.SCORE_FORMULA_ID
+
+
+def test_the_period_fallback_limit_matches_in_all_three_languages():
+    """compute_pt_params' period-estimate fallback refuses a spacing faster than
+    this; a port that disagreed would centre curves the reference does not."""
+    assert _rust_const_in("scoring.rs", "PERIOD_FALLBACK_MAX_HZ") == pt.PERIOD_FALLBACK_MAX_HZ
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cs = open(os.path.join(root, "neuromech", "designer", "PtScore.cs"), encoding="utf-8").read()
+    m = re.search(r"PERIOD_FALLBACK_MAX_HZ = ([0-9.]+);", cs)
+    assert m and float(m.group(1)) == pt.PERIOD_FALLBACK_MAX_HZ
+
+
+def _rust_const_in(fname, name):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src = open(os.path.join(root, "mobile-imu-core", "src", fname), encoding="utf-8").read()
+    return float(re.search(rf"pub const {name}: f64 = ([0-9.]+);", src).group(1))
+

@@ -1661,3 +1661,109 @@ def test_a_peak_is_kept_when_no_trough_is_ever_counted():
     params = p.compute_pt_params(t, a, release_idx=100, detrend=False)
     assert params is not None
     assert params["N"] == 0.5, params["N"]
+
+
+def _swing_settling_off_centre(creep_deg, zeta=0.3):
+    """Hold at 180, a damped step of 42 deg, and a slow creep of the settled
+    angle: the leg comes to rest `creep_deg` away from the centre it rang down
+    about (a phone 25 cm below the knee does this by 0.4 deg)."""
+    t = np.arange(0, 12.0, 0.01)
+    ts = np.clip(t - 1.0, 0, None)
+    wn = 2 * math.pi * 0.9
+    wd = wn * math.sqrt(1 - zeta ** 2)
+    ring = 1 - np.exp(-zeta * wn * ts) * (np.cos(wd * ts) + zeta * wn / wd * np.sin(wd * ts))
+    creep = creep_deg * (1 - np.exp(-np.clip(ts - 2.0, 0, None) / 1.5))
+    return t, 180.0 - 42.0 * ring + creep
+
+
+@pytest.mark.parametrize("creep_deg", [-1.5, -1.0, -0.5, 0.5, 1.0, 1.5])
+def test_a_small_shift_in_the_settled_angle_does_not_switch_centring_off(creep_deg):
+    """The period-estimate fallback (2026-11-19). Measured from the settled
+    angle, this swing's second extremum sits at about min_amp. Before the
+    fallback a 0.5 deg creep the wrong way left the height pass with two
+    extrema, the swing-centring never ran, and the same swing read N 1.0 with
+    area_ratio 0.36 to 0.50 (PT 0.73 to 0.94 against 0.46)."""
+    from pendulastic_pt_score import mas_estimate
+    clean = compute_pt_params(*_swing_settling_off_centre(0.0), detrend=False)
+    p = compute_pt_params(*_swing_settling_off_centre(creep_deg), detrend=False)
+    assert p["N"] == clean["N"] == 1.5
+    assert abs(p["area_ratio"] - clean["area_ratio"]) < 0.01
+    assert abs(mas_estimate(p)["pt7"] - mas_estimate(clean)["pt7"]) < 0.01
+
+
+def test_the_fallback_leaves_a_curve_with_three_extrema_alone(monkeypatch):
+    """It only runs when the height pass finds fewer than three extrema, so a
+    normally ringing swing never reaches the second find_peaks pair."""
+    import pendulastic_pt_score as P
+    calls = []
+    real = P.find_peaks
+
+    def spy(x, **kw):
+        calls.append(sorted(kw))
+        return real(x, **kw)
+
+    monkeypatch.setattr(P, "find_peaks", spy)
+    P.compute_pt_params(*_swing_settling_off_centre(0.0, zeta=0.1), detrend=False)
+    assert calls and all("height" in kw for kw in calls)
+    calls.clear()
+    P.compute_pt_params(*_swing_settling_off_centre(-1.0), detrend=False)
+    assert any("height" not in kw for kw in calls)
+
+
+def _drop_and_hold(depth, tau):
+    """Hold at 180, then an exponential fall to rest with no rebound: a limb
+    that dropped and never swung."""
+    t = np.arange(0, 12.0, 0.01)
+    ts = np.clip(t - 1.0, 0, None)
+    return t, ts, 180.0 - depth * (1 - np.exp(-ts / tau)) * (t >= 1.0)
+
+
+def _without_the_fallback(monkeypatch):
+    """The scorer with the fallback switched off: no spacing is slow enough."""
+    import pendulastic_pt_score as P
+    monkeypatch.setattr(P, "PERIOD_FALLBACK_MAX_HZ", 1e-9)
+    return P
+
+
+@pytest.mark.parametrize("name,depth,tau,wobble", [
+    # (independent review, 2026-11-19) prominence alone finds each of these
+    # and, unguarded, centred the curve on it: PT 1.3 to 1.7 became 0.5 to 0.7.
+    ("tail-tremor-2p5hz", 20.0, 0.3, lambda t, ts: 0.6 * np.sin(2 * np.pi * 2.5 * t)),
+    ("tail-tremor-2p5hz-large", 40.0, 0.3, lambda t, ts: 1.0 * np.sin(2 * np.pi * 2.5 * t)),
+    ("clonus-5hz", 60.0, 0.2, lambda t, ts: 8.0 * np.exp(-ts) * np.sin(2 * np.pi * 5.0 * ts)),
+    ("clonus-7hz", 60.0, 0.2, lambda t, ts: 8.0 * np.exp(-ts) * np.sin(2 * np.pi * 7.0 * ts)),
+    ("late-bump", 20.0, 0.15, lambda t, ts: 1.2 * np.exp(-((t - 5.0) / 0.2) ** 2)),
+])
+@pytest.mark.parametrize("detrend", [False, True])
+def test_wobble_on_a_limb_that_never_swung_is_not_centred(monkeypatch, name, depth, tau, wobble, detrend):
+    """The fallback's guard: a drop with tremor, clonus or a bump on its tail
+    scores exactly as it does with the fallback switched off."""
+    import pendulastic_pt_score as P
+    t, ts, a = _drop_and_hold(depth, tau)
+    a = a + wobble(t, ts)
+    got = P.compute_pt_params(t, a, detrend=detrend)
+    off = _without_the_fallback(monkeypatch).compute_pt_params(t, a, detrend=detrend)
+    for k in ("N", "R2n", "f", "area_ratio", "phi_max_ratio", "A0_deg"):
+        assert got[k] == off[k], (name, k)
+
+
+def test_the_fallback_is_what_scores_the_off_centre_swing(monkeypatch):
+    """Guards the guard: switched off, the swing settling 1 deg off its centre
+    reads the uncentred way again."""
+    t, a = _swing_settling_off_centre(-1.0)
+    on = compute_pt_params(t, a, detrend=False)
+    off = _without_the_fallback(monkeypatch).compute_pt_params(t, a, detrend=False)
+    assert on["N"] == 1.5 and off["N"] == 1.0
+    assert on["area_ratio"] < 0.2 < 0.4 < off["area_ratio"]
+
+
+@pytest.mark.xfail(strict=True, reason="known limit of the fallback: wobble at a limb-like rate (under "
+                                       "PERIOD_FALLBACK_MAX_HZ) on a drop that never swung is still centred")
+def test_slow_wobble_on_a_limb_that_never_swung_is_not_centred(monkeypatch):
+    import pendulastic_pt_score as P
+    t, ts, a = _drop_and_hold(40.0, 0.3)
+    a = a + 1.0 * np.sin(2 * np.pi * 1.0 * t)
+    got = P.compute_pt_params(t, a, detrend=True)
+    off = _without_the_fallback(monkeypatch).compute_pt_params(t, a, detrend=True)
+    assert got["area_ratio"] == off["area_ratio"]
+

@@ -772,7 +772,7 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     to prevent.
 
     `pt7` IS A LEGACY KEY NAME. It carries whatever the current scored set
-    sums, which is five terms under SCORE_FORMULA_ID "pt5trough-ref-2026-11-16",
+    sums, which is five terms under SCORE_FORMULA_ID "pt5troughfb-ref-2026-11-16",
     not seven: omega_min_n left on 2026-10-26 and omega_max_n on 2026-11-16.
     The name is deliberately NOT
     renamed. It is a column name in generated CSVs and in the neuromech
@@ -1015,7 +1015,17 @@ _DIAGNOSTIC_KEYS = ["omega_max_n", "omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt5trough-ref-2026-11-16"   # 5-term set (omega_max_n
+#: Fastest swing the period-estimate fallback will accept as a limb's ring-down
+#: (see compute_pt_params). A passive shank swings near 1 Hz; clonus runs at 5
+#: to 8 Hz. The corpus trials the fallback acts on imply 0.9 to 2.0 Hz. A
+#: judgement value, set on the same trials it is quoted against.
+PERIOD_FALLBACK_MAX_HZ = 2.0
+
+# "fb" (2026-11-19): the period-estimate pass falls back to prominence alone
+# when the height pass finds fewer than three extrema (compute_pt_params).
+# It is an extraction change, not a change to the summed set, but it moves the
+# score of every curve that sat on that cliff, so the id moves with it.
+SCORE_FORMULA_ID = "pt5troughfb-ref-2026-11-16"   # 5-term set (omega_max_n
 #                                               dropped), N counted from the
 #                                               first trough, divisor = terms
 #                                               actually scored; see the
@@ -3446,6 +3456,40 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     min_amp  = max(1.0, 0.05 * A0)
     pk_i2, _ = find_peaks( phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
     tr_i2, _ = find_peaks(-phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
+    # Period-estimate fallback. `height` here is measured from the SETTLED
+    # angle, and a heavily damped swing rings down about a centre that is not
+    # the settled angle, so its later extrema can be real (prominent) and still
+    # sit within min_amp of neutral. When that leaves fewer than three, the
+    # centring below never ran and the curve was scored in the uncentred frame:
+    # a 0.4 deg shift in the settled angle (a phone 25 cm below the knee is
+    # enough) took a synthetic N = 2.5 swing from PT7 0.37 to 1.23, with N 0.5,
+    # f unmeasured and area_ratio 0.15 -> 0.62 (2026-11-18). The first pass
+    # only has to find the swing's period, so in that case it asks for
+    # prominence alone. Curves that already yield three extrema are untouched,
+    # and the counting pass below keeps both thresholds.
+    #
+    # On the phone corpus every trial this changes that has an optical pair
+    # moves TOWARDS its optical score (for example 1.68 to 0.355 against 0.352).
+    #
+    # Guarded, because prominence alone will also find tail wobble or clonus
+    # on a limb that dropped and never swung, and centring THAT on the wobble's
+    # period reads a severe curve as a mild one (independent review,
+    # 2026-11-19: PT 1.3 to 1.7 became 0.5 to 0.7). The retry is used only when
+    # (a) the height pass found at least one extremum itself, so something did
+    # swing min_amp past the settled angle; (b) the retry finds at least three,
+    # otherwise the height pass's own result stands and nothing downstream
+    # changes; and (c) their spacing is a limb's, not a tremor's
+    # (PERIOD_FALLBACK_MAX_HZ).
+    _n_height = len(pk_i2) + len(tr_i2)
+    if 1 <= _n_height < 3:
+        _pk_f, _ = find_peaks( phi_s, distance=min_dist, prominence=min_amp)
+        _tr_f, _ = find_peaks(-phi_s, distance=min_dist, prominence=min_amp)
+        _ext_f = np.sort(np.concatenate([np.asarray(_pk_f, dtype=int),
+                                         np.asarray(_tr_f, dtype=int)]))
+        if len(_ext_f) >= 3:
+            _half_f = float(np.median(np.diff(t_r[_ext_f])))
+            if _half_f * 2.0 * PERIOD_FALLBACK_MAX_HZ >= 1.0:
+                pk_i2, tr_i2 = _pk_f, _tr_f
     # Second pass, against the swing's own centre rather than the settled
     # angle. The first pass exists only to estimate the period the boxcar
     # needs -- extremum spacing is a half period -- so this refines the same
