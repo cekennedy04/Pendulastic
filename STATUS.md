@@ -360,6 +360,14 @@ scores move. "Not verified" is stated, never implied.
 - **Stale:** every OptiTrack amplitude, polarity and PT score computed before the loader fix,
   and every OptiTrack PT score computed from a curve with dropped frames.
 - **Proposed, not started:** app flexion-axis capture; the options in the diagnosis report.
+- **Replay config trap (2026-11-19, PR open on `fix/evidence-config-no-silent-default`):**
+  `imu_calibration_config.json` is gitignored, so a git worktree or a fresh clone has none and
+  `load_config()` returned `DEFAULT_CONFIG` (EMA 0.3) without a word. The corpus is scored at
+  EMA 0.5 (`REFERENCE_REPLAY_CONFIG`). A corpus table on PR #128 was produced that way and
+  withdrawn. `load_config()` now announces the fallback on stderr, corpus and evidence scripts
+  use `load_persisted_config()` (raises when the file is missing or invalid), and a test lists
+  every tracked caller allowed to fall back. Corpus scripts should name
+  `REFERENCE_REPLAY_CONFIG`.
 - **Entry points:** `batch_imu_vs_optitrack_rmse.py`, `rmse_pipeline_common.py`.
 - **Gaps:** the RMSE gate compares only the active swing window, so it could not see the seed bug;
   do not treat it as a sufficient gate for filter changes. The result "AHRS floor has zero effect on

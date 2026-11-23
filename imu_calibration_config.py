@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "imu_calibration_config.json")
@@ -67,18 +68,68 @@ def _is_valid(cfg) -> bool:
     return True
 
 
-def load_config() -> dict:
-    """Return the persisted config, or DEFAULT_CONFIG if missing/corrupt/invalid."""
+class ReplayConfigMissing(RuntimeError):
+    """No usable persisted config, and the caller may not fall back to DEFAULT_CONFIG."""
+
+
+_fallback_announced = False
+
+
+def _read_persisted():
+    """(config, None), or (None, why it could not be used)."""
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-    except (OSError, ValueError):
-        return dict(DEFAULT_CONFIG)
+    except OSError:
+        return None, "not found"
+    except ValueError:
+        return None, "not valid JSON"
     if not _is_valid(cfg):
-        return dict(DEFAULT_CONFIG)
+        return None, "missing a required key or holding a wrong type"
     merged = dict(DEFAULT_CONFIG)
     merged.update(cfg)
-    return merged
+    return merged, None
+
+
+def load_config() -> dict:
+    """Return the persisted config, or DEFAULT_CONFIG if missing/corrupt/invalid.
+
+    For the desktop app and the tuner, where a fresh checkout has to run. The
+    fallback is announced once per process on stderr, because DEFAULT_CONFIG is
+    NOT the footing the corpus is scored on (ema_alpha 0.3 against the
+    reference 0.5). Corpus and evidence scripts must not call this: use
+    REFERENCE_REPLAY_CONFIG, or load_persisted_config() if the persisted file
+    really is what is wanted.
+    """
+    global _fallback_announced
+    cfg, why = _read_persisted()
+    if cfg is not None:
+        return cfg
+    if not _fallback_announced:
+        _fallback_announced = True
+        print(f"imu_calibration_config: {CONFIG_PATH} {why}; using DEFAULT_CONFIG "
+              f"(ema_alpha {DEFAULT_CONFIG['ema_alpha']}), which is not the reference footing "
+              f"(ema_alpha {REFERENCE_REPLAY_CONFIG['ema_alpha']})", file=sys.stderr)
+    return dict(DEFAULT_CONFIG)
+
+
+def load_persisted_config() -> dict:
+    """The persisted config, or ReplayConfigMissing. Never DEFAULT_CONFIG.
+
+    For corpus and evidence scripts. imu_calibration_config.json is gitignored,
+    so a git worktree or a fresh clone does not have it, and load_config()
+    there replays every trial at ema_alpha 0.3 without a word. A corpus table
+    published on PR #128 was produced that way (2026-11-19) and had to be
+    withdrawn.
+    """
+    cfg, why = _read_persisted()
+    if cfg is None:
+        raise ReplayConfigMissing(
+            f"{CONFIG_PATH} {why}. This script will not fall back to DEFAULT_CONFIG "
+            f"(ema_alpha {DEFAULT_CONFIG['ema_alpha']}): the corpus is scored at ema_alpha "
+            f"{REFERENCE_REPLAY_CONFIG['ema_alpha']}. Use imu_calibration_config.REFERENCE_REPLAY_CONFIG, "
+            f"or run from a checkout that has the file (a git worktree does not; it is gitignored).")
+    return cfg
 
 
 def save_config(cfg: dict) -> None:

@@ -26,7 +26,7 @@ import imu_calibration_tuner as tuner                # noqa: E402
 import pendulastic_imu_server as srv                 # noqa: E402
 import pendulastic_pt_score as pts                   # noqa: E402
 import rmse_pipeline_common as rpc                   # noqa: E402
-from imu_calibration_config import load_config       # noqa: E402
+from imu_calibration_config import load_persisted_config   # noqa: E402
 
 # ── instrumented replay: same source, two hooks ──
 src = textwrap.dedent(inspect.getsource(tuner.replay_trial))
@@ -90,7 +90,7 @@ def score(t, ang):
 
 
 def replay_corpus(out_path):
-    cfg = dict(load_config())
+    cfg = dict(load_persisted_config())   # raises rather than replay at DEFAULT_CONFIG
     import inspect as _i
     trials = batch.discover_trials(analysis="phone") if "analysis" in _i.signature(batch.discover_trials).parameters else batch.discover_trials()
     print(len(trials), "trials", flush=True)
