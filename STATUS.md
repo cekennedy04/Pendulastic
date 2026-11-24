@@ -343,7 +343,7 @@ scores move. "Not verified" is stated, never implied.
   `0.2.0+...`. Independent review of the split: `docs/seed-fix-split-review`.
 
 - **Flexion axis fitted on the whole swing (owner approved 2026-11-19; branch
-  `fix/flex-axis-whole-recording`, PR #130 open, not merged; core 0.5.0, footing
+  `fix/flex-axis-whole-recording`, PR #130, merged on the owner's instruction 2026-11-24; core 0.5.0, footing
   `ref-100hz-ema0.5-flexrec`):** the scored replay, in Rust and in the Python reference, now
   fits the flexion axis on every sample from the zero until the swing has died and does not
   level it. Before, it used the first 25 samples (the release itself) levelled against an
@@ -367,8 +367,8 @@ scores move. "Not verified" is stated, never implied.
   The live trace, the desktop server and every tool that replays with the local
   `imu_calibration_config.json` or a hard-coded config still use the old rule.
   `lateral_motion` still measures against the old axis. Trends break at the footing change.
-- **Axis-fit quality flags (2026-11-20; branch `feat/axis-fit-late-motion-flag`, PR #132,
-  stacked on #130, open, not merged):** flags only, no change to any angle or score (corpus:
+- **Axis-fit quality flags (2026-11-20; PR #132, merged into #130's branch 2026-11-24 and
+  landed with it):** flags only, no change to any angle or score (corpus:
   angle and axis bit-identical on 164 of 164 scored logs). The scored replay now reports how
   the axis fit ended (`FlexAxisEstimator.fit_report` in Python, `AxisFitReport` in Rust,
   `axis_fit` on the app's trial record and export (schema v8), one line on the result
@@ -404,6 +404,14 @@ scores move. "Not verified" is stated, never implied.
   and every OptiTrack PT score computed from a curve with dropped frames.
 - **Proposed, not started:** the options in the diagnosis report. (App flexion-axis capture: see the
   whole-swing axis entry under workstream 4.)
+- **Replay config trap (2026-11-19, PR #131, merged):**
+  `imu_calibration_config.json` is gitignored, so a git worktree or a fresh clone has none and
+  `load_config()` returned `DEFAULT_CONFIG` (EMA 0.3) without a word. The corpus is scored at
+  EMA 0.5 (`REFERENCE_REPLAY_CONFIG`). A corpus table on PR #128 was produced that way and
+  withdrawn. `load_config()` now announces the fallback on stderr, corpus and evidence scripts
+  use `load_persisted_config()` (raises when the file is missing or invalid), and a test lists
+  every tracked caller allowed to fall back. Corpus scripts should name
+  `REFERENCE_REPLAY_CONFIG`.
 - **Entry points:** `batch_imu_vs_optitrack_rmse.py`, `rmse_pipeline_common.py`.
 - **Gaps:** the RMSE gate compares only the active swing window, so it could not see the seed bug;
   do not treat it as a sufficient gate for filter changes. The result "AHRS floor has zero effect on

@@ -89,9 +89,9 @@ def score_corpus(verbose=True) -> list[dict]:
     import participant_paths as pp
     import pendulastic_pt_score as pts
     import rmse_pipeline_common as rpc
-    from imu_calibration_config import load_config
+    from imu_calibration_config import load_persisted_config
 
-    cfg = load_config()
+    cfg = load_persisted_config()   # raises rather than replay at DEFAULT_CONFIG (ema_alpha 0.3)
     fp = _fingerprint()
     cache_file = os.path.join(OUT, f"corpus_rest_cache_{fp}.json")
     os.makedirs(OUT, exist_ok=True)
