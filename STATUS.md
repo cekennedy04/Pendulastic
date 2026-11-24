@@ -480,8 +480,14 @@ scores move. "Not verified" is stated, never implied.
   the axis-fit "Check this trial:" line never showed. The three-argument call dates from the
   PT-score commit (`f56a5fe`); every field added to the message after it was lost. The fix
   passes the whole message through. **It changes what a new trial stores:** analysis-convention
-  parameters and score (the two conventions disagree on the grade for 63 of 197 corpus trials),
-  with footing and quality fields filled. The on-screen numbers are unchanged. Checked in a
+  parameters and score, with footing and quality fields filled. **Held for an owner decision:**
+  the capture screen still shows the live convention, so with the fix one trial shows two sets of
+  numbers (capture screen against Trials, a reopened trial, trends and export) and nothing names
+  the convention. On the corpus (Python reference, reference footing, 162 trials scored both
+  ways) the PT score differs by more than 0.05 on 17 and more than 0.3 on 2, A0 by more than
+  2 deg on 71, and the verdict on 7. Options in the PR: show analysis everywhere, label both, or
+  store live. Also open: trends key on leg and footing only, not `drift_correction`; older
+  records' null footing is read as the old app footing. Checked in a
   local browser with synthetic motion events on a flagged and a clean swing. **Not verified:**
   on a real phone; and that the deployed build has the fault (inferred from the same code on
   `main`, not read from a record exported from the live app). **Owner:** trials already stored
