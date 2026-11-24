@@ -425,7 +425,7 @@ test('a text-backed file is unaffected by the blob support', () => {
 test('the manifest schema is v7', () => {
   const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials });
   const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
-  assert.equal(m.schema, 'pendulastic/session-export/v7');
+  assert.equal(m.schema, 'pendulastic/session-export/v8');
 });
 
 // The shared masTrials fixture is deliberately legacy-shaped, to exercise the
@@ -507,4 +507,19 @@ test('footing provenance survives export and import, and trends keep the footing
   assert.deepEqual(m.trials.map((t) => t.score_formula_id), [null, 'pt5trough-ref-2026-11-16']);
   const s = sessionSeries([{ id: 's', timestamp: 1 }], { s: m.trials }, { scoreOf: () => 0.2 });
   assert.equal(s.length, 2);
+});
+
+test('the manifest carries the axis fit report verbatim, null when not reported', () => {
+  const fit = { n_fit: 131, closed: true, late_n: 383, late_energy_ratio: 11.8, max_span_s: 0.3,
+    flags: ['motion_after_swing_settled'] };
+  const files = buildExportFiles({
+    session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
+    patient: { id: 'p1', clinic_patient_id: 'ANON-7', created_at: 1 },
+    trials: [{ ...trial('t1', 'a\n'), axis_fit: fit }, trial('t2', 'b\n')],
+  });
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('manifest.json')).text);
+  const [flagged, older] = manifest.trials;
+  assert.deepEqual(flagged.axis_fit, fit);
+  assert.ok('axis_fit' in older);
+  assert.equal(older.axis_fit, null, 'null means not reported, never "no flags"');
 });

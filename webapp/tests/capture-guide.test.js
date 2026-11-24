@@ -92,7 +92,7 @@ test('the lateral note and metric list are not trapped inside #pt-score', () => 
   const open = html.indexOf('<div id="pt-score"');
   const close = html.indexOf('</div>', open);
   assert.ok(open > 0 && close > open, '#pt-score container not found');
-  for (const id of ['lateral-note', 'metric-list']) {
+  for (const id of ['lateral-note', 'axis-fit-note', 'metric-list']) {
     const at = html.indexOf(`id="${id}"`);
     assert.ok(at > 0, `${id} missing`);
     assert.ok(at > close, `${id} is inside #pt-score, which showTrial never unhides`);

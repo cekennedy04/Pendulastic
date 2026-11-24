@@ -3,7 +3,7 @@
 
 use crate::ahrs::Vec3;
 use crate::calibration::ReleaseDetector;
-use crate::flex_axis::{lateral_motion, FlexAxisEstimator, LateralMotion, DEFAULT_THRESHOLD};
+use crate::flex_axis::{lateral_motion, AxisFitReport, FlexAxisEstimator, LateralMotion, DEFAULT_THRESHOLD};
 use crate::replay::{replay, RawSample, ReplayConfig, Sensor, TrialError, TrialResult};
 use crate::scoring::{compute_pt_params, PtParams};
 use crate::stillness::{SampleBuf, GYRO_BIAS_WINDOW_S, ZERO_CAPTURE_GUARD_RAD_S};
@@ -239,6 +239,16 @@ impl TrialSession {
         let p = compute_pt_params(&r.t, &r.angle_deg, None, detrend)
             .ok_or(TrialError::InsufficientSamples)?;
         Ok((r, p))
+    }
+
+    /// Capture quality: how the axis fit of the automatic replay ended and
+    /// what it left out (`AxisFitReport`). `None` when the trial does not
+    /// replay or the fit took no sample. Flags only. It replays with the
+    /// session's own config, which is what `finish(None)` scores; under a
+    /// `release_override` the scored fit starts elsewhere and this does not
+    /// describe it. The wasm layer never passes an override.
+    pub fn axis_fit(&self) -> Option<AxisFitReport> {
+        replay(&self.samples, &self.cfg).ok()?.axis_fit
     }
 
     /// Capture quality: how much of this trial happened OUT of the flexion

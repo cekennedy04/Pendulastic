@@ -489,3 +489,171 @@ def test_the_reversals_of_a_slow_swing_do_not_cap_the_fit():
         for _ in range(90):
             est.quiet(0.01)               # under QUIET_STOP_S each time
     assert not est.closed and est.n_samples == 60
+
+
+# -- fit_report: flags only, mirrored in mobile-imu-core/src/flex_axis.rs -----
+#    (fit_report_tests there feeds the same sequences and expects the same
+#    numbers; the REF_* fixtures pin the two ports on whole logs.)
+
+_X, _Y, _STILL = (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 0.0)
+
+
+def _feed(est, n, v, elapsed=True):
+    """`n` samples 10 ms apart, as replay_trial drives the estimator."""
+    v = np.asarray(v, dtype=float)
+    for _ in range(n):
+        if elapsed:
+            est.elapsed(0.01)
+        if float(np.linalg.norm(v)) < 1.0:
+            est.quiet(0.01)
+        else:
+            est.update(v)
+
+
+def _rec():
+    from imu_flex_axis import FlexAxisEstimator
+    return FlexAxisEstimator.whole_recording()
+
+
+def test_an_opening_fit_or_an_empty_one_has_no_report():
+    from imu_flex_axis import FlexAxisEstimator
+    est = FlexAxisEstimator()
+    _feed(est, 40, (2.0, 0.0, 0.0))
+    assert est.fit_report() is None
+    est = _rec()
+    _feed(est, 300, _STILL)
+    assert est.fit_report() is None
+
+
+def test_a_clean_swing_raises_no_flag():
+    est = _rec()
+    for k in range(6):
+        _feed(est, 45, (3.0 if k % 2 == 0 else -3.0, 0.0, 0.0))
+        _feed(est, 30, _STILL)          # a slow reversal, 0.3 s
+    _feed(est, 300, _STILL)
+    rep = est.fit_report()
+    assert rep["closed"] and rep["n_fit"] == 270 and rep["late_n"] == 0
+    assert rep["max_span_s"] == pytest.approx(0.31, abs=1e-9)
+    assert rep["flags"] == []
+
+
+@pytest.mark.parametrize("n", [20, 23, 24])
+def test_a_weak_fit_with_nothing_after_it_raises_no_flag(n):
+    """The corpus has five such fits (20 to 24 samples, 2026-11-20). They are
+    weak, not wrong, and must not fire."""
+    est = _rec()
+    _feed(est, n, (1.5, 0.0, 0.0))
+    _feed(est, 400, _STILL)
+    rep = est.fit_report()
+    assert rep["closed"] and rep["n_fit"] == n and rep["flags"] == []
+
+
+def test_brief_motion_then_a_long_hold_then_the_swing_is_flagged():
+    """Known regression 1 of the stop rule (PR #130): the fit closes on the
+    brief motion and never sees the swing. The flag says so; the axis is
+    still wrong."""
+    est = _rec()
+    _feed(est, 8, (0.0, 1.6, 0.0))
+    _feed(est, 220, _STILL)             # 2.2 s: past QUIET_STOP_WEAK_S
+    _feed(est, 100, (3.0, 0.0, 0.0))
+    est.finalize()
+    rep = est.fit_report()
+    assert (rep["n_fit"], rep["closed"], rep["late_n"]) == (8, True, 100)
+    assert rep["flags"] == ["axis_fit_weak_then_motion", "motion_after_swing_settled"]
+    assert rep["late_energy_ratio"] == pytest.approx(900.0 / (8 * 1.6 * 1.6), abs=1e-9)
+    assert abs(float(est.axis[1])) > 0.999
+
+
+def test_motion_before_the_quiet_second_is_up_is_flagged():
+    """Known regression 2: the fit is still open and takes the second motion."""
+    est = _rec()
+    _feed(est, 26, (2.0, 0.0, 0.0))
+    _feed(est, 90, _STILL)
+    _feed(est, 100, (0.0, 3.0, 0.0))
+    rep = est.fit_report()
+    assert not rep["closed"] and rep["n_fit"] == 126 and rep["late_n"] == 0
+    assert rep["max_span_s"] == pytest.approx(0.91, abs=1e-9)
+    assert rep["flags"] == ["axis_fit_spans_quiet"]
+
+
+def test_a_sample_dropout_inside_the_quiet_is_flagged():
+    """Known regression 3: a gap in the stream adds 10 ms to the quiet clock
+    (the bounded interval), and all of itself to the report."""
+    est = _rec()
+    _feed(est, 30, (2.0, 0.0, 0.0))
+    _feed(est, 20, _STILL)
+    est.elapsed(2.5)
+    est.quiet(0.01)
+    _feed(est, 100, (0.0, 3.0, 0.0))
+    rep = est.fit_report()
+    assert not rep["closed"] and rep["n_fit"] == 130
+    assert rep["max_span_s"] == pytest.approx(2.71, abs=1e-9)
+    assert rep["flags"] == ["axis_fit_spans_quiet"]
+
+
+def test_handling_after_the_swing_is_flagged_by_its_energy():
+    est = _rec()
+    _feed(est, 100, (3.0, 0.0, 0.0))
+    _feed(est, 150, _STILL)
+    _feed(est, 2, (0.0, 1.0, 0.0))      # 2 / 900 of the fit's energy
+    rep = est.fit_report()
+    assert rep["closed"] and rep["late_n"] == 2 and rep["flags"] == []
+    _feed(est, 50, (0.0, 2.0, 0.0))     # now 202 / 900
+    rep = est.fit_report()
+    assert rep["late_energy_ratio"] == pytest.approx(202.0 / 900.0, abs=1e-12)
+    assert rep["flags"] == ["motion_after_swing_settled"]
+
+
+def test_the_report_does_not_touch_the_fit():
+    """With and without the report's clock the axis is the same to the bit,
+    and reset clears the counters."""
+    a, b = _rec(), _rec()
+    seq = [(20, (1.7, 0.4, 0.1)), (130, _STILL), (9, (0.2, 2.2, 0.3)),
+           (250, _STILL), (60, (0.3, 0.1, 2.9))]
+    for n, v in seq:
+        _feed(a, n, v)
+        _feed(b, n, v, elapsed=False)
+    a.finalize()
+    b.finalize()
+    assert np.array_equal(a.axis, b.axis)
+    assert (a.n_samples, a.closed) == (b.n_samples, b.closed)
+    assert a.fit_report()["late_n"] > 0
+    a.reset()
+    assert a.fit_report() is None
+    _feed(a, 5, (2.0, 0.0, 0.0))
+    rep = a.fit_report()
+    assert (rep["n_fit"], rep["late_n"], rep["max_span_s"]) == (5, 0, 0.01)
+
+
+def test_a_stray_sample_after_a_weak_fit_is_not_flagged():
+    """Independent review of the flags, 2026-11-20: 24 samples, a long quiet,
+    then ONE sample at the threshold used to read "the main movement came
+    after it". The weak flag needs the same energy as the general one."""
+    est = _rec()
+    _feed(est, 24, (1.5, 0.0, 0.0))
+    _feed(est, 300, _STILL)
+    _feed(est, 1, (0.0, 1.0, 0.0))
+    rep = est.fit_report()
+    assert rep["closed"] and rep["n_fit"] == 24 and rep["late_n"] == 1
+    assert rep["late_energy_ratio"] == pytest.approx(1.0 / 54.0, abs=1e-12)
+    assert rep["flags"] == []
+    _feed(est, 5, (0.0, 1.1, 0.0))      # 7.05 / 54: past the ratio
+    assert est.fit_report()["flags"] == ["axis_fit_weak_then_motion", "motion_after_swing_settled"]
+
+
+def test_motion_after_the_fit_closed_never_reaches_the_axis():
+    """The late-motion branch only counts. The axis after any amount of late
+    motion is the axis of an estimator that never saw it, to the bit, and bad
+    input after the close is ignored as it was before the report existed."""
+    a, b = _rec(), _rec()
+    for est in (a, b):
+        _feed(est, 60, (1.7, 0.4, 0.1))
+        _feed(est, 150, _STILL)
+    assert a.closed and b.closed
+    _feed(a, 400, (0.2, 5.0, 0.3))
+    for bad in ("abc", None, [1.0, 2.0], [float("nan"), 0.0, 0.0]):
+        a.update(bad)
+    a.finalize()
+    b.finalize()
+    assert np.array_equal(a.axis, b.axis) and a.n_samples == b.n_samples == 60
+    assert a.fit_report()["late_n"] == 400 and b.fit_report()["late_n"] == 0

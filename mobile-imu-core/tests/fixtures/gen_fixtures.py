@@ -794,7 +794,31 @@ def main():
          "Weak swing, then an out-and-back bump 1.3 s after it died."),
         ("REF_WEAKLATE", [1.0, 0.0, 0.0], 14.0, 1.0, 0.5,
          "Weaker swing, then the same bump 3 s after it died."),
+        # The three known regressions of the stop rule against the opening
+        # rule (PR #130). The axis is WRONG on each; what is pinned is that
+        # the fit's report flags it (FlexAxisEstimator.fit_report).
+        ("REF_FLAG_BRIEF", [1.0, 0.0, 0.0], 45.0, 1.0, 1.2,
+         "Brief motion at the zero 60 deg off the swing axis, a 2.3 s hold, then the swing."),
+        ("REF_FLAG_EARLY", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "26 fast samples about x, then motion about y starting 0.8 s later: before the quiet second is up."),
+        ("REF_FLAG_GAP", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "30 fast samples about x, a 2.5 s sample dropout, then motion about y."),
     ]
+    # tag -> the flags fit_report must give on that log.
+    want_flags = {
+        "REF_INPLANE": [], "REF_YAW": [], "REF_NOCOMMIT": [], "REF_TRANSIENT": [],
+        "REF_RUNON": ["motion_after_swing_settled"],
+        # 24 samples: the capped fit takes ONE sample of the handling (after
+        # 1.6 s of quiet) to reach 25, and the flag says so.
+        "REF_CLIFF24": ["motion_after_swing_settled", "axis_fit_spans_quiet"],
+        "REF_CLIFF25": ["motion_after_swing_settled"],
+        "REF_CLIFF49": ["motion_after_swing_settled"],
+        "REF_WEAKBUMP": ["motion_after_swing_settled", "axis_fit_spans_quiet"],   # capped, as CLIFF24
+        "REF_WEAKLATE": ["axis_fit_weak_then_motion", "motion_after_swing_settled"],
+        "REF_FLAG_BRIEF": ["axis_fit_weak_then_motion", "motion_after_swing_settled"],
+        "REF_FLAG_EARLY": ["axis_fit_spans_quiet"],
+        "REF_FLAG_GAP": ["axis_fit_spans_quiet"],
+    }
     from imu_flex_axis import (QUIET_STOP_MIN_SAMPLES as _QMIN, QUIET_STOP_S as _QS,
                                QUIET_STOP_WEAK_S as _QWEAK)
 
@@ -805,7 +829,32 @@ def main():
     opening_params = dict(ref_params, flex_axis_fit="opening")
     ref_angles = {}
     for tag, axis, a0d, fhz, tau, doc in ref_cases:
-        if tag.startswith("REF_CLIFF"):
+        if tag == "REF_FLAG_BRIEF":
+            # Half a sine peaking 2 rad/s for 0.1 s, 60 deg off x in the x-y
+            # plane, at the end of the hold; the swing starts 2.3 s later.
+            brief_dir = [math.cos(math.radians(60.0)), math.sin(math.radians(60.0)), 0.0]
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=10.5, hold_s=2.0 + 0.1 + 2.3,
+                late=(2.0, 0.1, brief_dir, 2.0))
+        elif tag in ("REF_FLAG_EARLY", "REF_FLAG_GAP"):
+            n_cliff = 26 if tag == "REF_FLAG_EARLY" else 30
+            # EARLY: the half-sine about y takes about 0.08 s to reach
+            # 1 rad/s, so the fit sees about 0.88 s of quiet: clear of both
+            # SPAN_QUIET_S below it and QUIET_STOP_S above it (asserted).
+            t_late = 2.0 + n_cliff / 100.0 + (0.8 if tag == "REF_FLAG_EARLY" else 3.1)
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=t_late + 2.5, cliff=n_cliff,
+                late=(t_late, 1.0, [0.0, 1.0, 0.0], 4.0))
+            if tag == "REF_FLAG_GAP":
+                # No samples at all for 2.5 s inside the quiet.
+                g0 = 2.0 + n_cliff / 100.0 + 0.3
+                keep = [not (g0 <= t < g0 + 2.5) for t in ts_l]
+                raw = [r for r in raw if not (g0 <= r["t"] < g0 + 2.5)]
+                ts_l = [v for v, k_ in zip(ts_l, keep) if k_]
+                ts_ms_l = [v for v, k_ in zip(ts_ms_l, keep) if k_]
+                acc_l = [v for v, k_ in zip(acc_l, keep) if k_]
+                gyr_l = [v for v, k_ in zip(gyr_l, keep) if k_]
+        elif tag.startswith("REF_CLIFF"):
             n_cliff = int(tag[len("REF_CLIFF"):])
             raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
                 axis, a0d, fhz, tau, total_s=6.0, cliff=n_cliff,
@@ -851,6 +900,18 @@ def main():
             e_x = sum(float(g[0] ** 2) for g in gyr_l if np.linalg.norm(g) >= 1.0)
             e_y = sum(float(g[1] ** 2) for g in gyr_l if np.linalg.norm(g) >= 1.0)
             assert e_y > e_x, f"{tag}: late motion {e_y:.0f} does not outweigh the swing {e_x:.0f}"
+        rep = cap_ref["axis_fit"]
+        assert rep is not None and rep["flags"] == want_flags[tag], f"{tag}: {rep}"
+        if tag == "REF_FLAG_EARLY":
+            from imu_flex_axis import SPAN_QUIET_S as _SPAN
+            assert _SPAN + 0.05 < rep["max_span_s"] < _QS - 0.05, f"{tag}: span {rep['max_span_s']}"
+        if tag.startswith("REF_FLAG_"):
+            # Each is a case the opening rule gets right and this one does not.
+            cap_open = {}
+            replay_trial(raw, opening_params, tick_s=_ATICK, capture=cap_open)
+            off = lambda c: math.degrees(math.acos(min(1.0, abs(float(c["flex_axis"][0])))))
+            assert off(cap_open) < 6.0 and off(cap_ref) > 50.0, \
+                f"{tag}: opening {off(cap_open):.1f} deg, recording {off(cap_ref):.1f} deg"
         ref_angles[tag] = (raw, np.asarray(ang_ref))
         parts.append(f"// {doc}\n")
         parts.append(f64_slice(f"{tag}_RAW_T", ts_l, "Per-step timestamp (s)."))
@@ -864,6 +925,13 @@ def main():
                                "replay_trial tick times at ANALYSIS_TICK_S."))
         parts.append(f64_slice(f"{tag}_ANG", ang_ref,
                                "replay_trial angle at the reference footing (index 0 NaN)."))
+        parts.append(f"/// fit_report: (n_fit, closed, late_n, late_energy_ratio, max_span_s).\n"
+                     f"pub const {tag}_AXIS_FIT: (usize, bool, usize, f64, f64) = "
+                     f"({rep['n_fit']}, {'true' if rep['closed'] else 'false'}, {rep['late_n']}, "
+                     f"{rust_f64(rep['late_energy_ratio'])}, {rust_f64(rep['max_span_s'])});\n")
+        parts.append(f"/// fit_report: the flag codes.\n"
+                     f"pub const {tag}_AXIS_FLAGS: &[&str] = &["
+                     + ", ".join(f'"{c}"' for c in rep["flags"]) + "];\n\n")
         if tag in ("REF_YAW", "REF_TRANSIENT"):
             _, ang_open = replay_trial(raw, opening_params, tick_s=_ATICK)
             parts.append(f64_slice(f"{tag}_OPENING_ANG", ang_open,

@@ -144,6 +144,10 @@ QUIET_STOP_MIN_SAMPLES = MIN_COMMIT_SAMPLES
 # this: the fit is then the transient alone.
 QUIET_STOP_WEAK_S = 2.0
 
+# fit_report() thresholds. Flags only; see FlexAxisEstimator.fit_report.
+LATE_MOTION_ENERGY_RATIO = 0.1
+SPAN_QUIET_S = 0.8
+
 
 class FlexAxisEstimator:
     """Online principal-axis estimator. Feed it raw gyro vectors via update();
@@ -152,7 +156,8 @@ class FlexAxisEstimator:
 
     __slots__ = ("_threshold", "_min_samples", "_m", "_n", "_axis",
                  "_committed", "_first", "_gravity", "_leveled", "_level",
-                 "_quiet_stop", "_quiet", "_closed", "_capped")
+                 "_quiet_stop", "_quiet", "_closed", "_capped",
+                 "_late_n", "_late_energy", "_since_fast", "_max_span")
 
     def __init__(self, threshold: float = DEFAULT_THRESHOLD,
                  min_samples: Optional[int] = MIN_COMMIT_SAMPLES,
@@ -166,6 +171,11 @@ class FlexAxisEstimator:
         self._quiet = 0.0
         self._closed = False
         self._capped = False
+        # Report only (fit_report); none of these reaches the axis.
+        self._late_n = 0
+        self._late_energy = 0.0
+        self._since_fast = 0.0
+        self._max_span = 0.0
         self._m = np.zeros((3, 3), dtype=float)
         self._n = 0
         self._axis: Optional[np.ndarray] = None
@@ -208,6 +218,69 @@ class FlexAxisEstimator:
     def closed(self) -> bool:
         """True once a whole-recording fit has stopped taking samples."""
         return self._closed
+
+    def elapsed(self, dt) -> None:
+        """Report the time since the previous gyro sample, as measured (NOT
+        the bounded interval the filter integrates: a dropout counts in
+        full). Report only: it feeds the longest stretch without a
+        qualifying sample that the fit went on to span (fit_report), and
+        never the fit."""
+        if self._quiet_stop is None or self._n == 0 or self._closed:
+            return
+        try:
+            dt = float(dt)
+        except (TypeError, ValueError):
+            return
+        if np.isfinite(dt) and dt > 0.0:
+            self._since_fast += dt
+
+    def fit_report(self) -> Optional[dict]:
+        """How a whole-recording fit ended and what it left out, or None for
+        an opening fit or one that took no sample. Read it after the replay.
+
+        A FLAG, not a correction: nothing here changes the axis, the angle or
+        the score. It exists because the stop rule has known blind spots
+        (PR #130, "Known regressions against main"), each of which leaves the
+        axis fitted on something other than the swing:
+
+        - axis_fit_weak_then_motion: the fit closed holding fewer than
+          QUIET_STOP_MIN_SAMPLES samples and the qualifying motion after it
+          carried at least LATE_MOTION_ENERGY_RATIO times its energy.
+          Typically brief motion at the zero, a hold of over two seconds,
+          then the real swing, which the axis never saw. A stray sample or
+          two after a weak swing is not this.
+        - motion_after_swing_settled: the fit closed and the qualifying
+          motion that followed carried at least LATE_MOTION_ENERGY_RATIO times
+          the energy of the fit (sum of squared rates). The leg or the phone
+          was handled, or swung again, after the swing died. The axis is the
+          first swing; the trace after it is not a pendulum drop.
+        - axis_fit_spans_quiet: two consecutive qualifying samples in the
+          fit are SPAN_QUIET_S or more apart (max_span_s is that interval,
+          so it includes the 10 ms of the sample that ends it), counted on
+          measured time, so a sample dropout counts in full. Two separate
+          motions, or a gap in the stream, may both be inside the fit. A
+          sample without a timestamp counts as the nominal 10 ms.
+        """
+        if self._quiet_stop is None or self._n == 0:
+            return None
+        fit_energy = float(np.trace(self._m))
+        ratio = (self._late_energy / fit_energy) if fit_energy > 0.0 else 0.0
+        flags = []
+        late = self._closed and self._late_n > 0 and ratio >= LATE_MOTION_ENERGY_RATIO
+        if late and self._n < QUIET_STOP_MIN_SAMPLES:
+            flags.append("axis_fit_weak_then_motion")
+        if late:
+            flags.append("motion_after_swing_settled")
+        if self._max_span >= SPAN_QUIET_S:
+            flags.append("axis_fit_spans_quiet")
+        return {
+            "n_fit": int(self._n),
+            "closed": bool(self._closed),
+            "late_n": int(self._late_n),
+            "late_energy_ratio": float(ratio),
+            "max_span_s": float(self._max_span),
+            "flags": flags,
+        }
 
     def quiet(self, dt) -> None:
         """Report `dt` seconds spent under the threshold. Only a
@@ -255,7 +328,21 @@ class FlexAxisEstimator:
         Ignores sub-threshold samples and does nothing once committed, so
         callers can drive it unconditionally. Gravity is optional: without it
         the axis is simply not levelled."""
-        if self._committed or self._closed:
+        if self._closed:
+            # Qualifying motion the closed fit leaves out. Counted for
+            # fit_report and nothing else; never raises, as the early return
+            # this replaces never did.
+            try:
+                late = np.asarray(v, dtype=float)
+            except (TypeError, ValueError):
+                return
+            if late.shape == (3,) and np.all(np.isfinite(late)):
+                mag = float(np.linalg.norm(late))
+                if mag >= self._threshold:
+                    self._late_n += 1
+                    self._late_energy += mag * mag
+            return
+        if self._committed:
             return
         v = np.asarray(v, dtype=float)
         if v.shape != (3,) or not np.all(np.isfinite(v)):
@@ -282,6 +369,9 @@ class FlexAxisEstimator:
             self._first = u.copy()
             self._axis = u.copy()
 
+        if self._n > 0 and self._since_fast > self._max_span:
+            self._max_span = self._since_fast
+        self._since_fast = 0.0
         self._m += np.outer(v, v)
         self._n += 1
         self._quiet = 0.0
@@ -341,6 +431,10 @@ class FlexAxisEstimator:
         self._quiet = 0.0
         self._closed = False
         self._capped = False
+        self._late_n = 0
+        self._late_energy = 0.0
+        self._since_fast = 0.0
+        self._max_span = 0.0
 
 
 def principal_axis(vectors, threshold: float = DEFAULT_THRESHOLD) -> Optional[np.ndarray]:

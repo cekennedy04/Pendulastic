@@ -311,3 +311,17 @@ test('a trial record names the formula and footing that scored it, null when not
   assert.equal(old.score_formula_id, null);
   assert.equal(old.scoring_footing, null);
 });
+
+test('a stored trial carries the axis fit report, and the key is absent when not reported', () => {
+  const fit = { n_fit: 7, closed: true, late_n: 129, late_energy_ratio: 36.6, max_span_s: 0.01,
+    flags: ['axis_fit_weak_then_motion', 'motion_after_swing_settled'] };
+  const base = { sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.5.0' };
+  assert.deepEqual(makeTrialRecord({ ...base, axisFit: fit }).axis_fit, fit);
+  // The core had no report (the fit took no sample): stored as null.
+  const none = makeTrialRecord({ ...base, axisFit: null });
+  assert.ok('axis_fit' in none);
+  assert.equal(none.axis_fit, null);
+  // A wasm without the export: absent, never an empty flag list.
+  assert.equal('axis_fit' in makeTrialRecord(base), false);
+});
