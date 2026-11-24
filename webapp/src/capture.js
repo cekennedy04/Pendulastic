@@ -136,7 +136,12 @@ export function createReplyRouter({ onState, onResult, onError }) {
   return {
     route(m) {
       if (m.type === 'state') onState(m);
-      else if (m.type === 'result') onResult(m.params, m.trajectory, m.ptScore);
+      // The WHOLE message, not a picked subset: this used to forward only
+      // (params, trajectory, ptScore), so every field the worker added later
+      // (the analysis-convention pair, scoring quality, lateral motion, the
+      // axis-fit report, provenance) was dropped here and never reached the
+      // screen or the stored record on a live trial.
+      else if (m.type === 'result') onResult(m);
       else if (m.type === 'exportResult') exportWaiters.shift()?.resolve(m.jsonl);
       else if (m.type === 'reference') referenceWaiters.shift()?.resolve(m.payload);
       else if (m.type === 'error') routeError(m);

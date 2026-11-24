@@ -301,3 +301,47 @@ test('stopAndExportRaw skips an empty recording', async () => {
   assert.equal(exported, false);
   assert.equal(closed, true);
 });
+// ---- the result message reaches the page whole -----------------------------
+// The router used to forward only (params, trajectory, ptScore). Every field
+// worker.js added to the message afterwards was dropped on a live trial: the
+// stored record fell back to the live convention with no footing, no lateral
+// motion and no axis-fit report, and the notes built from them never showed.
+
+const WORKER_RESULT = {
+  type: 'result',
+  params: { a0_deg: 60 },
+  trajectory: { t: [0], angle: [0] },
+  ptScore: { score: 1 },
+  paramsDetrended: { a0_deg: 58 },
+  ptScoreDetrended: { score: 2 },
+  detrendedRefusal: null,
+  scoringQuality: { flags: [] },
+  scoringQualityDetrended: { flags: ['x'] },
+  lateralMotion: { ratio: 0.2 },
+  axisFit: { n_fit: 120, closed: true, flags: ['motion_after_swing_settled'] },
+  provenance: { scoreFormulaId: 'f', scoringFooting: 'reference' },
+};
+
+test('the router hands onResult the whole result message', () => {
+  let got = null;
+  let argc = -1;
+  const router = createReplyRouter({
+    onState() {}, onError() {},
+    onResult: (...a) => { argc = a.length; got = a[0]; },
+  });
+  router.route(WORKER_RESULT);
+  assert.equal(argc, 1);
+  assert.deepEqual(got, WORKER_RESULT);
+});
+
+test('every field of the worker result survives to the outcome action', async () => {
+  const { nextOutcome } = await import('../src/app.js');
+  let got = null;
+  const router = createReplyRouter({ onState() {}, onError() {}, onResult: (m) => { got = m; } });
+  router.route(WORKER_RESULT);
+  const { action } = nextOutcome(false, got);
+  for (const k of Object.keys(WORKER_RESULT)) {
+    if (k === 'type') continue;
+    assert.deepEqual(action[k], WORKER_RESULT[k], `${k} was dropped between the worker and the page`);
+  }
+});

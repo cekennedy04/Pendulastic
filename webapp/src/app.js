@@ -2231,9 +2231,14 @@ if (typeof document !== 'undefined') {
     el('drift').textContent = `${drift_deg.toFixed(2)}° / 5.00°`;
   }
 
-  function onResult(p, trajectory, ptScore) {
-    const { latched, action } = nextOutcome(faulted, { type: 'result', params: p, trajectory, ptScore });
+  // `m` is the worker's whole `result` message (capture.js forwards it
+  // unpicked). nextOutcome carries every field it knows onto the action;
+  // rebuilding the event here from three positional arguments is how the
+  // rest were once lost.
+  function onResult(m) {
+    const { latched, action } = nextOutcome(faulted, m);
     faulted = latched;
+    const p = m.params;
     // RETAIN, never overwrite (fix C1). This was an unconditional
     // `exportSession = session`, and on the normal completion path -- the
     // only completion path -- `session` is ALREADY `null` by the time this

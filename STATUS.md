@@ -471,6 +471,22 @@ scores move. "Not verified" is stated, never implied.
   `npm run deploy` (clean origin/main only, tests, `--project pendulastic-app`, verifies the live
   BUILD_ID). Local `.vercel/` link to the wrong project deleted (owner, 2026-11-17). After a
   deploy, iPhones must close and reopen the app (cache-first service worker).
+- **Live trials dropped most of the result (found 2026-11-24; PR #133, in review):** the
+  page-side router forwarded only `params`, `trajectory` and `ptScore` from the worker's
+  result, so on a live capture nothing else reached the screen or the stored record. Stored
+  live trials therefore fell back to the live drift convention (`drift_correction: "live"`,
+  `analysis_refusal: "not_available"`) with `scoring_footing`, `score_formula_id`,
+  `scoring_quality` and `lateral_motion` null and no `axis_fit`; the out-of-plane note and
+  the axis-fit "Check this trial:" line never showed. The three-argument call dates from the
+  PT-score commit (`f56a5fe`); every field added to the message after it was lost. The fix
+  passes the whole message through. **It changes what a new trial stores:** analysis-convention
+  parameters and score (the two conventions disagree on the grade for 63 of 197 corpus trials),
+  with footing and quality fields filled. The on-screen numbers are unchanged. Checked in a
+  local browser with synthetic motion events on a flagged and a clean swing. **Not verified:**
+  on a real phone; and that the deployed build has the fault (inferred from the same code on
+  `main`, not read from a record exported from the live app). **Owner:** trials already stored
+  by the live app are live-convention with no footing, whatever the bullet above says about
+  records carrying it; the raw log is stored with each, so they can be re-scored.
 - **Backlog:** eviction soak test; zone recalibration (blocked: only 2
   legs with MAS ≥ 1); app bugs in `TODOS.md`.
 
