@@ -708,8 +708,10 @@ class _IMUDevice:
                     # principal axis, rather than freezing on this single
                     # release-transient sample -- see imu_flex_axis. Stays
                     # armed until the estimator commits. imu_calibration_tuner
-                    # .replay_trial drives the SAME estimator so live and
-                    # replay cannot diverge.
+                    # .replay_trial drives the SAME estimator when its config
+                    # names no fit; on the reference footing ("flex_axis_fit":
+                    # "recording") replay fits on the whole swing instead and
+                    # differs from this on purpose.
                     _flex_axis_est.update(v, gravity=self.accel)
                     _flex_axis       = _flex_axis_est.axis
                     _flex_axis_armed = not _flex_axis_est.committed

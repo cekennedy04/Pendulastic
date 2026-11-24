@@ -691,11 +691,33 @@ def main():
     #                   has a yaw component, so the flex tier (rotation about
     #                   the learnt axis) and the across-gravity tier differ.
     #   REF_NOCOMMIT -- a small swing whose |omega| clears the 1 rad/s capture
-    #                   threshold on fewer than MIN_COMMIT_SAMPLES samples, so
-    #                   the axis never commits and the provisional one is used.
+    #                   threshold on fewer than MIN_COMMIT_SAMPLES samples. The
+    #                   whole-recording fit still uses every one of them; the
+    #                   opening fit would never commit.
+    #   REF_TRANSIENT -- an in-plane swing with an off-axis burst in the first
+    #                   0.2 s after release (the hand letting go). The opening
+    #                   fit (25 samples) is pulled by it; the whole-recording
+    #                   fit is not. Carried on both fits so each path is pinned.
+    #   REF_RUNON    -- a quickly damped in-plane swing, then the phone is
+    #                   handled: a burst about another axis that starts more
+    #                   than QUIET_STOP_S after the last sample at 1 rad/s. The
+    #                   whole-recording fit has closed by then and ignores it.
+    #   REF_CLIFF24 / 25 / 49 -- 2 rad/s about x for that many samples, 1.5 s of
+    #                   quiet, then a second of handling about y peaking at
+    #                   4 rad/s (pre-merge review, 2026-11-19: with no close
+    #                   below 50 samples the axis came out 90 deg off at 49).
+    #                   At 25 and 49 the quiet second closes the fit; at 24 it
+    #                   is capped at QUIET_STOP_MIN_SAMPLES and takes one
+    #                   sample of the handling.
+    #   REF_WEAKBUMP -- a weak swing (fewer than QUIET_STOP_MIN_SAMPLES fast
+    #                   samples), then a 0.4 s out-and-back bump about y 1.3 s
+    #                   after it died: the capped case on a real-shaped swing.
+    #   REF_WEAKLATE -- a weaker swing and the same bump 3 s after it died:
+    #                   QUIET_STOP_WEAK_S has closed the fit by then.
     from imu_calibration_tuner import ANALYSIS_TICK_S as _ATICK
     from imu_flex_axis import MIN_COMMIT_SAMPLES as _MIN_COMMIT
     ref_params = {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True,
+                  "flex_axis_fit": "recording",
                   "gravity_seed": True, "method": "relative"}
 
     def _rodrigues(v, k, ang):
@@ -704,7 +726,8 @@ def main():
         return (v * math.cos(ang) + np.cross(k, v) * math.sin(ang)
                 + k * float(np.dot(k, v)) * (1.0 - math.cos(ang)))
 
-    def _ref_log(axis, a0_deg, f_hz, tau, total_s, hold_s=2.0, fs=100.0):
+    def _ref_log(axis, a0_deg, f_hz, tau, total_s, hold_s=2.0, fs=100.0, burst=None, late=None,
+                 cliff=None):
         k = np.asarray(axis, dtype=float)
         k = k / np.linalg.norm(k)
         a, w = math.radians(a0_deg), 2.0 * math.pi * f_hz
@@ -714,6 +737,11 @@ def main():
             ts_ms = int(round(t_i * 1000.0))
             if t_i < hold_s:
                 theta, rate = 0.0, 0.0
+            elif cliff is not None:
+                # a constant 2 rad/s for `cliff` samples, then still
+                k_fast = min(i - int(round(hold_s * fs)), cliff)
+                rate = 2.0 if i - int(round(hold_s * fs)) < cliff else 0.0
+                theta = 2.0 * k_fast / fs
             else:
                 tt = t_i - hold_s
                 env = math.exp(-tt / tau)
@@ -724,6 +752,16 @@ def main():
                      + e2e_accel_bias + ripple_a)
             ripple_g = 0.002 * math.sin(2.0 * math.pi * 9.0 * t_i)
             gyro = rate * k + e2e_gyro_bias + ripple_g
+            if late is not None and late[0] <= t_i < late[0] + late[1]:
+                # (start s, length s, axis, peak rad/s[, cycles]): motion after
+                # the swing. Half a sine by default; cycles=2 is out and back.
+                cyc = late[4] if len(late) > 4 else 1
+                gyro = gyro + (late[3] * math.sin(cyc * math.pi * (t_i - late[0]) / late[1])
+                               * np.asarray(late[2], dtype=float))
+            if burst is not None and hold_s <= t_i < hold_s + 0.2:
+                # (axis, peak rad/s): a half-sine about another axis.
+                gyro = gyro + (burst[1] * math.sin(math.pi * (t_i - hold_s) / 0.2)
+                               * np.asarray(burst[0], dtype=float))
             ts_l.append(t_i)
             ts_ms_l.append(ts_ms)
             acc_l.append(accel)
@@ -741,18 +779,139 @@ def main():
         ("REF_YAW", [1.0, 0.0, math.tan(math.radians(30.0))], 45.0, 1.0, 1.2,
          "Swing about an axis tilted 30 deg toward the hold's vertical (a yaw component)."),
         ("REF_NOCOMMIT", [1.0, 0.0, 0.0], 14.0, 1.0, 0.5,
-         "Small swing whose axis never commits (provisional axis used)."),
+         "Small swing with fewer than MIN_COMMIT_SAMPLES qualifying samples."),
+        ("REF_TRANSIENT", [1.0, 0.0, 0.0], 45.0, 1.0, 1.2,
+         "In-plane swing with an off-axis release transient."),
+        ("REF_RUNON", [1.0, 0.0, 0.0], 45.0, 1.0, 0.5,
+         "Quickly damped swing, then the phone is handled after a quiet spell."),
+        ("REF_CLIFF24", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "24 fast samples about x, 1.5 s quiet, then handling about y."),
+        ("REF_CLIFF25", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "25 fast samples about x, 1.5 s quiet, then handling about y."),
+        ("REF_CLIFF49", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "49 fast samples about x, 1.5 s quiet, then handling about y."),
+        ("REF_WEAKBUMP", [1.0, 0.0, 0.0], 16.0, 1.0, 0.6,
+         "Weak swing, then an out-and-back bump 1.3 s after it died."),
+        ("REF_WEAKLATE", [1.0, 0.0, 0.0], 14.0, 1.0, 0.5,
+         "Weaker swing, then the same bump 3 s after it died."),
+        # The three known regressions of the stop rule against the opening
+        # rule (PR #130). The axis is WRONG on each; what is pinned is that
+        # the fit's report flags it (FlexAxisEstimator.fit_report).
+        ("REF_FLAG_BRIEF", [1.0, 0.0, 0.0], 45.0, 1.0, 1.2,
+         "Brief motion at the zero 60 deg off the swing axis, a 2.3 s hold, then the swing."),
+        ("REF_FLAG_EARLY", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "26 fast samples about x, then motion about y starting 0.8 s later: before the quiet second is up."),
+        ("REF_FLAG_GAP", [1.0, 0.0, 0.0], 0.0, 1.0, 1.0,
+         "30 fast samples about x, a 2.5 s sample dropout, then motion about y."),
     ]
+    # tag -> the flags fit_report must give on that log.
+    want_flags = {
+        "REF_INPLANE": [], "REF_YAW": [], "REF_NOCOMMIT": [], "REF_TRANSIENT": [],
+        "REF_RUNON": ["motion_after_swing_settled"],
+        # 24 samples: the capped fit takes ONE sample of the handling (after
+        # 1.6 s of quiet) to reach 25, and the flag says so.
+        "REF_CLIFF24": ["motion_after_swing_settled", "axis_fit_spans_quiet"],
+        "REF_CLIFF25": ["motion_after_swing_settled"],
+        "REF_CLIFF49": ["motion_after_swing_settled"],
+        "REF_WEAKBUMP": ["motion_after_swing_settled", "axis_fit_spans_quiet"],   # capped, as CLIFF24
+        "REF_WEAKLATE": ["axis_fit_weak_then_motion", "motion_after_swing_settled"],
+        "REF_FLAG_BRIEF": ["axis_fit_weak_then_motion", "motion_after_swing_settled"],
+        "REF_FLAG_EARLY": ["axis_fit_spans_quiet"],
+        "REF_FLAG_GAP": ["axis_fit_spans_quiet"],
+    }
+    from imu_flex_axis import (QUIET_STOP_MIN_SAMPLES as _QMIN, QUIET_STOP_S as _QS,
+                               QUIET_STOP_WEAK_S as _QWEAK)
+
+    def _last_fast(a0d, fhz, tau):
+        _, ts0, _, _, g0 = _ref_log([1.0, 0.0, 0.0], a0d, fhz, tau, total_s=9.0)
+        fast0 = [t for t, g in zip(ts0, g0) if np.linalg.norm(g) >= 1.0]
+        return max(fast0), len(fast0)
+    opening_params = dict(ref_params, flex_axis_fit="opening")
     ref_angles = {}
     for tag, axis, a0d, fhz, tau, doc in ref_cases:
-        raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(axis, a0d, fhz, tau, total_s=6.0)
+        if tag == "REF_FLAG_BRIEF":
+            # Half a sine peaking 2 rad/s for 0.1 s, 60 deg off x in the x-y
+            # plane, at the end of the hold; the swing starts 2.3 s later.
+            brief_dir = [math.cos(math.radians(60.0)), math.sin(math.radians(60.0)), 0.0]
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=10.5, hold_s=2.0 + 0.1 + 2.3,
+                late=(2.0, 0.1, brief_dir, 2.0))
+        elif tag in ("REF_FLAG_EARLY", "REF_FLAG_GAP"):
+            n_cliff = 26 if tag == "REF_FLAG_EARLY" else 30
+            # EARLY: the half-sine about y takes about 0.08 s to reach
+            # 1 rad/s, so the fit sees about 0.88 s of quiet: clear of both
+            # SPAN_QUIET_S below it and QUIET_STOP_S above it (asserted).
+            t_late = 2.0 + n_cliff / 100.0 + (0.8 if tag == "REF_FLAG_EARLY" else 3.1)
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=t_late + 2.5, cliff=n_cliff,
+                late=(t_late, 1.0, [0.0, 1.0, 0.0], 4.0))
+            if tag == "REF_FLAG_GAP":
+                # No samples at all for 2.5 s inside the quiet.
+                g0 = 2.0 + n_cliff / 100.0 + 0.3
+                keep = [not (g0 <= t < g0 + 2.5) for t in ts_l]
+                raw = [r for r in raw if not (g0 <= r["t"] < g0 + 2.5)]
+                ts_l = [v for v, k_ in zip(ts_l, keep) if k_]
+                ts_ms_l = [v for v, k_ in zip(ts_ms_l, keep) if k_]
+                acc_l = [v for v, k_ in zip(acc_l, keep) if k_]
+                gyr_l = [v for v, k_ in zip(gyr_l, keep) if k_]
+        elif tag.startswith("REF_CLIFF"):
+            n_cliff = int(tag[len("REF_CLIFF"):])
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=6.0, cliff=n_cliff,
+                late=(2.0 + n_cliff / 100.0 + 1.5, 1.0, [0.0, 1.0, 0.0], 4.0))
+        elif tag in ("REF_WEAKBUMP", "REF_WEAKLATE"):
+            t_died, n_weak = _last_fast(a0d, fhz, tau)
+            assert 0 < n_weak < _QMIN, f"{tag}: {n_weak} fast samples in the swing"
+            gap = 1.3 if tag == "REF_WEAKBUMP" else 3.0
+            assert (_QS < gap < _QWEAK) if tag == "REF_WEAKBUMP" else gap > _QWEAK
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=9.0,
+                late=(t_died + gap, 0.4, [0.0, 1.0, 0.0], 3.0, 2))
+        else:
+            raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(
+                axis, a0d, fhz, tau, total_s=6.0,
+                burst=([0.0, 1.0, 0.0], 3.0) if tag == "REF_TRANSIENT" else None,
+                late=(4.6, 1.2, [0.0, 1.0, 0.0], 4.0) if tag == "REF_RUNON" else None)
+        if tag == "REF_RUNON":
+            from imu_flex_axis import QUIET_STOP_S as _QUIET
+            fast = [t for t, g in zip(ts_l, gyr_l) if np.linalg.norm(g) >= 1.0]
+            swing_fast = [t for t in fast if t < 4.6]
+            late_fast = [t for t in fast if t >= 4.6]
+            assert late_fast and min(late_fast) - max(swing_fast) > _QUIET, "REF_RUNON: no quiet spell"
+            # the handling must outweigh the swing, or ignoring it proves nothing
+            e_sw = sum(float(np.dot(g, g)) for t, g in zip(ts_l, gyr_l)
+                       if t < 4.6 and np.linalg.norm(g) >= 1.0)
+            e_lt = sum(float(np.dot(g, g)) for t, g in zip(ts_l, gyr_l)
+                       if t >= 4.6 and np.linalg.norm(g) >= 1.0)
+            assert e_lt > 2.0 * e_sw, f"REF_RUNON: late {e_lt:.0f} vs swing {e_sw:.0f}"
         n_fast = sum(1 for g in gyr_l if np.linalg.norm(g) >= 1.0)
         if tag == "REF_NOCOMMIT":
             assert 0 < n_fast < _MIN_COMMIT, f"{tag}: {n_fast} samples clear the threshold"
         else:
             assert n_fast >= _MIN_COMMIT, f"{tag}: only {n_fast} samples clear the threshold"
-        t_ref, ang_ref = replay_trial(raw, ref_params, tick_s=_ATICK)
+        cap_ref = {}
+        t_ref, ang_ref = replay_trial(raw, ref_params, tick_s=_ATICK, capture=cap_ref)
         assert len(t_ref) > 0, f"{tag} never zeroed"
+        if tag.startswith("REF_CLIFF") or tag in ("REF_WEAKBUMP", "REF_WEAKLATE"):
+            # The late motion is about y and the swing about x. It must not
+            # take the axis, and must be strong enough that it would have.
+            off_x = math.degrees(math.acos(min(1.0, abs(float(cap_ref["flex_axis"][0])))))
+            assert off_x < 5.0, f"{tag}: axis {off_x:.1f} deg off the swing"
+            e_x = sum(float(g[0] ** 2) for g in gyr_l if np.linalg.norm(g) >= 1.0)
+            e_y = sum(float(g[1] ** 2) for g in gyr_l if np.linalg.norm(g) >= 1.0)
+            assert e_y > e_x, f"{tag}: late motion {e_y:.0f} does not outweigh the swing {e_x:.0f}"
+        rep = cap_ref["axis_fit"]
+        assert rep is not None and rep["flags"] == want_flags[tag], f"{tag}: {rep}"
+        if tag == "REF_FLAG_EARLY":
+            from imu_flex_axis import SPAN_QUIET_S as _SPAN
+            assert _SPAN + 0.05 < rep["max_span_s"] < _QS - 0.05, f"{tag}: span {rep['max_span_s']}"
+        if tag.startswith("REF_FLAG_"):
+            # Each is a case the opening rule gets right and this one does not.
+            cap_open = {}
+            replay_trial(raw, opening_params, tick_s=_ATICK, capture=cap_open)
+            off = lambda c: math.degrees(math.acos(min(1.0, abs(float(c["flex_axis"][0])))))
+            assert off(cap_open) < 6.0 and off(cap_ref) > 50.0, \
+                f"{tag}: opening {off(cap_open):.1f} deg, recording {off(cap_ref):.1f} deg"
         ref_angles[tag] = (raw, np.asarray(ang_ref))
         parts.append(f"// {doc}\n")
         parts.append(f64_slice(f"{tag}_RAW_T", ts_l, "Per-step timestamp (s)."))
@@ -766,6 +925,20 @@ def main():
                                "replay_trial tick times at ANALYSIS_TICK_S."))
         parts.append(f64_slice(f"{tag}_ANG", ang_ref,
                                "replay_trial angle at the reference footing (index 0 NaN)."))
+        parts.append(f"/// fit_report: (n_fit, closed, late_n, late_energy_ratio, max_span_s).\n"
+                     f"pub const {tag}_AXIS_FIT: (usize, bool, usize, f64, f64) = "
+                     f"({rep['n_fit']}, {'true' if rep['closed'] else 'false'}, {rep['late_n']}, "
+                     f"{rust_f64(rep['late_energy_ratio'])}, {rust_f64(rep['max_span_s'])});\n")
+        parts.append(f"/// fit_report: the flag codes.\n"
+                     f"pub const {tag}_AXIS_FLAGS: &[&str] = &["
+                     + ", ".join(f'"{c}"' for c in rep["flags"]) + "];\n\n")
+        if tag in ("REF_YAW", "REF_TRANSIENT"):
+            _, ang_open = replay_trial(raw, opening_params, tick_s=_ATICK)
+            parts.append(f64_slice(f"{tag}_OPENING_ANG", ang_open,
+                                   "The same log with flex_axis_fit='opening' (25 samples, levelled)."))
+            if tag == "REF_TRANSIENT":
+                d_fit = float(np.nanmax(np.abs(np.asarray(ang_open) - np.asarray(ang_ref))))
+                assert d_fit > 1.0, f"REF_TRANSIENT: the two fits differ by only {d_fit:.3f} deg"
     # The yaw case must actually separate the tiers, or it tests nothing.
     raw_y, a_flex = ref_angles["REF_YAW"]
     _, a_grav = replay_trial(raw_y, dict(ref_params, flex_axis_capture=False), tick_s=_ATICK)

@@ -368,6 +368,10 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
         {"t": float, "role": str, "sensor": str, "v": [x,y,z], "phone_ts_ms": int}
     params: {"beta": float, "ema_alpha": float,
              "flex_axis_capture": bool, "gravity_seed": bool}
+        optional "flex_axis_fit": "opening" (default: the live rule, 25
+        samples then levelled) or "recording" (the reference footing: the
+        whole swing, not levelled; see imu_flex_axis). With "recording" the
+        axis is known only at the end, so this is a replay-only setting.
 
     Returns (t_seconds: np.ndarray, angle_deg: np.ndarray) at the same 50 ms
     cadence the live app displays and saves. Returns two empty arrays if the
@@ -420,7 +424,17 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
 
     flex_axis: Optional[np.ndarray] = None
     flex_axis_armed = True
-    flex_est = FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD)
+    # "recording": fit the axis on every sample from the zero until the swing
+    # has died (or the log ends) and do not level it (the reference footing from
+    # ref-100hz-ema0.5-flexrec; see FlexAxisEstimator.whole_recording).
+    # "opening": the live rule, 25 samples then levelled -- the default, so a
+    # config that does not name a fit replays as it always did.
+    flex_fit = params.get("flex_axis_fit", "opening")
+    if flex_fit not in ("opening", "recording"):
+        raise ValueError(f"flex_axis_fit must be 'opening' or 'recording', got {flex_fit!r}")
+    flex_est = (FlexAxisEstimator.whole_recording(_FLEX_CAPTURE_THRESHOLD)
+                if flex_fit == "recording"
+                else FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD))
     q_zero: dict = {}
     g_zero: dict = {}
     zero_captured = False
@@ -479,6 +493,11 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
             # The old 0.5 s bound silently substituted a constant for any
             # stream slower than 2 Hz -- see on_gyro()'s comment for the
             # live-trial measurement that found it.
+            # The measured interval, for the axis fit's report only. Known
+            # only when BOTH stamps are real: a sample with no stamp leaves
+            # last_ts at 0, and the next one's difference from 0 is its
+            # absolute timestamp, not an interval.
+            raw_dt = dt if st.last_ts else None
             if dt is None or not (0.0 < dt <= _MAX_GYRO_DT_S):
                 dt = _NOMINAL_GYRO_DT_S
             st.last_ts = ts
@@ -610,6 +629,18 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
             # place. Entry still requires pending_departure, so the guard
             # against capturing during handling is unchanged, as is when
             # q_zero is taken (zero_captured latches independently).
+            # Whole-recording fit: time spent under the capture rate counts
+            # towards closing the fit (FlexAxisEstimator.quiet), so what is
+            # done to the leg or the phone after the swing has died cannot
+            # reach the axis. A no-op for the opening fit and before the
+            # first fed sample.
+            if is_distal or is_solo:
+                # Measured time since the previous gyro sample, for the
+                # report on the fit only (a dropout counts in full here,
+                # where `dt` is bounded). Never reaches the axis.
+                flex_est.elapsed(raw_dt if raw_dt is not None and raw_dt > 0.0 else dt)
+            if (is_distal or is_solo) and omega_mag < _FLEX_CAPTURE_THRESHOLD:
+                flex_est.quiet(dt)
             if flex_axis_armed and (is_distal or is_solo) and \
                     (st.pending_departure or flex_est.n_samples):
                 if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
@@ -711,6 +742,10 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
     if not zero_captured:
         return np.array([]), np.array([])
 
+    if params["flex_axis_capture"] and flex_fit == "recording":
+        flex_est.finalize()
+        flex_axis = flex_est.axis
+
     def _swing_from_quats(quats: dict) -> float:
         if (ROLE_PROXIMAL in quats and ROLE_DISTAL in quats
                 and ROLE_PROXIMAL in q_zero and ROLE_DISTAL in q_zero):
@@ -785,6 +820,9 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
             capture["q_zero"] = np.asarray(q_zero[role], dtype=float).copy()
             capture["flex_axis"] = (None if flex_axis is None
                                     else np.asarray(flex_axis, dtype=float).copy())
+            # How the whole-recording fit ended and what it left out (flags
+            # only); None for the opening fit.
+            capture["axis_fit"] = flex_est.fit_report()
             capture["g_zero"] = (None if g_zero.get(role) is None
                                  else np.asarray(g_zero[role], dtype=float).copy())
     method = params.get("method", "relative")

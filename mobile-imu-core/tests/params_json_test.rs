@@ -10,7 +10,9 @@ mod golden;
 
 use mobile_imu_core::ahrs::Vec3;
 use mobile_imu_core::flex_axis::LateralMotion;
-use mobile_imu_core::params_json::{lateral_motion_to_json, params_to_json, scoring_quality_to_json};
+use mobile_imu_core::params_json::{
+    axis_fit_to_json, lateral_motion_to_json, params_to_json, scoring_quality_to_json,
+};
 use mobile_imu_core::replay::{replay, Method, RawSample, ReplayConfig, Sensor};
 use mobile_imu_core::scoring::{
     compute_pt_params, DriftCorrection, PtParams, QualityFlag, SpasticityType,
@@ -73,6 +75,7 @@ fn all_twenty_scalar_fields_are_present_as_keys() {
         // The golden run's footing (50 ms, no flex), which these fixtures pin.
         tick_s: mobile_imu_core::resample::TICK_S,
         flex_axis_capture: false,
+        flex_axis_fit: mobile_imu_core::replay::FlexAxisFit::Opening,
     };
     let r = replay(&raw_log(), &cfg).expect("release must be detected");
     let p = compute_pt_params(&r.t, &r.angle_deg, None, false).expect("trial must be scorable");
@@ -104,6 +107,7 @@ fn spasticity_type_serialises_to_one_of_its_three_variant_names() {
         // The golden run's footing (50 ms, no flex), which these fixtures pin.
         tick_s: mobile_imu_core::resample::TICK_S,
         flex_axis_capture: false,
+        flex_axis_fit: mobile_imu_core::replay::FlexAxisFit::Opening,
     };
     let r = replay(&raw_log(), &cfg).expect("release must be detected");
     let p = compute_pt_params(&r.t, &r.angle_deg, None, false).expect("trial must be scorable");
@@ -237,5 +241,21 @@ fn scoring_quality_says_which_correction_and_which_flags() {
     assert_eq!(
         scoring_quality_to_json(&p),
         "{\"drift_correction\":\"none\",\"drift_slope_deg_s\":0,\"drift_correction_rejected\":\"tail\",\"quality_flags\":[\"large_drift_correction\",\"a0_exceeds_curve_scored_uncorrected\"]}"
+    );
+}
+
+#[test]
+fn the_axis_fit_report_serialises_with_its_flags_and_none_as_null() {
+    use mobile_imu_core::flex_axis::AxisFitReport;
+    assert_eq!(axis_fit_to_json(None), "null");
+    let quiet = AxisFitReport { n_fit: 129, closed: true, late_n: 0, late_energy_ratio: 0.0, max_span_s: 0.26 };
+    assert_eq!(
+        axis_fit_to_json(Some(quiet)),
+        r#"{"n_fit":129,"closed":true,"late_n":0,"late_energy_ratio":0,"max_span_s":0.26,"flags":[]}"#
+    );
+    let bad = AxisFitReport { n_fit: 7, closed: true, late_n: 129, late_energy_ratio: 36.5, max_span_s: 0.01 };
+    assert_eq!(
+        axis_fit_to_json(Some(bad)),
+        r#"{"n_fit":7,"closed":true,"late_n":129,"late_energy_ratio":36.5,"max_span_s":0.01,"flags":["axis_fit_weak_then_motion","motion_after_swing_settled"]}"#
     );
 }

@@ -3,7 +3,7 @@
 
 use crate::ahrs::Vec3;
 use crate::calibration::ReleaseDetector;
-use crate::flex_axis::{lateral_motion, FlexAxisEstimator, LateralMotion, DEFAULT_THRESHOLD};
+use crate::flex_axis::{lateral_motion, AxisFitReport, FlexAxisEstimator, LateralMotion, DEFAULT_THRESHOLD};
 use crate::replay::{replay, RawSample, ReplayConfig, Sensor, TrialError, TrialResult};
 use crate::scoring::{compute_pt_params, PtParams};
 use crate::stillness::{SampleBuf, GYRO_BIAS_WINDOW_S, ZERO_CAPTURE_GUARD_RAD_S};
@@ -241,6 +241,16 @@ impl TrialSession {
         Ok((r, p))
     }
 
+    /// Capture quality: how the axis fit of the automatic replay ended and
+    /// what it left out (`AxisFitReport`). `None` when the trial does not
+    /// replay or the fit took no sample. Flags only. It replays with the
+    /// session's own config, which is what `finish(None)` scores; under a
+    /// `release_override` the scored fit starts elsewhere and this does not
+    /// describe it. The wasm layer never passes an override.
+    pub fn axis_fit(&self) -> Option<AxisFitReport> {
+        replay(&self.samples, &self.cfg).ok()?.axis_fit
+    }
+
     /// Capture quality: how much of this trial happened OUT of the flexion
     /// plane. `None` means NOT MEASURED -- the axis never committed, or no
     /// sample cleared the rate threshold -- which is a different claim from
@@ -256,6 +266,14 @@ impl TrialSession {
     /// cannot run live, and the project settled on the online estimator for
     /// the angle -- reporting quality against a different axis than the one
     /// the angle used would describe a trial that was never scored.
+    ///
+    /// KNOWN GAP (crate 0.5.0): the scored angle now uses the whole-recording
+    /// axis (`FlexAxisFit::Recording`), while this still measures against the
+    /// 25-sample levelled one, fed from the first sample of the log rather
+    /// than from the zero. So the sentence above no longer holds. Left as it
+    /// was so that the axis change moves the angle and nothing else; moving
+    /// this to the scored axis changes every stored lateral figure and is a
+    /// separate change.
     pub fn lateral_motion(&self) -> Option<LateralMotion> {
         // Gravity is passed, not omitted. Both Python call sites
         // (pendulastic_imu_server and imu_calibration_tuner) hand the

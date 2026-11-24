@@ -1415,3 +1415,163 @@ def test_a_dropout_is_not_counted_as_rotation():
     t, _ = tuner.replay_trial(_gyro_segments(segs, gap_before=1, gap_s=0.3), _GATE_PARAMS)
     assert len(t) == 0
 
+
+
+# -- flex_axis_fit: the whole-recording axis of the reference footing --------
+
+def _axis_fit_log(late=None):
+    """Hold, an off-axis release transient (y), a swing about x that dies,
+    then optionally handling about y after `late` seconds of quiet."""
+    segs = [(250, _CALM), (15, (0.3, 2.5, 0.0))]
+    for k in range(6):
+        amp = 3.0 * (0.85 ** k) * (1 if k % 2 == 0 else -1)
+        segs.append((45, (amp, 0.0, 0.0)))
+    if late is not None:
+        segs += [(int(round(late * 100)), _CALM), (150, (0.0, 3.0, 0.0))]
+    segs.append((120, _CALM))
+    return _gyro_segments(segs)
+
+
+def _axis_off_x_deg(samples, **extra):
+    import imu_calibration_config
+    cap = {}
+    params = dict(imu_calibration_config.REFERENCE_REPLAY_CONFIG, **extra)
+    t, _ = tuner.replay_trial(samples, params, tick_s=tuner.ANALYSIS_TICK_S, capture=cap)
+    assert len(t) > 0
+    return float(np.degrees(np.arccos(min(1.0, abs(float(cap["flex_axis"][0]))))))
+
+
+def test_the_reference_footing_fits_the_axis_on_the_whole_swing():
+    import imu_calibration_config
+    assert imu_calibration_config.REFERENCE_REPLAY_CONFIG["flex_axis_fit"] == "recording"
+    log = _axis_fit_log()
+    assert _axis_off_x_deg(log, flex_axis_fit="opening") > 25.0     # mostly the transient
+    assert _axis_off_x_deg(log) < 12.0
+
+
+def test_a_config_without_the_key_replays_the_opening_fit():
+    params = {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True, "gravity_seed": True}
+    log = _axis_fit_log()
+    _, a_default = tuner.replay_trial(log, params)
+    _, a_opening = tuner.replay_trial(log, dict(params, flex_axis_fit="opening"))
+    assert np.array_equal(a_default, a_opening, equal_nan=True)
+
+
+def test_an_unknown_fit_is_refused():
+    import pytest
+    with pytest.raises(ValueError):
+        tuner.replay_trial(_axis_fit_log(), {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True,
+                                             "gravity_seed": True, "flex_axis_fit": "everything"})
+
+
+def test_handling_after_a_quiet_second_does_not_reach_the_axis():
+    clean = _axis_off_x_deg(_axis_fit_log())
+    assert abs(_axis_off_x_deg(_axis_fit_log(late=1.2)) - clean) < 1e-9
+
+
+def test_handling_before_the_quiet_second_is_up_does_reach_it():
+    """The limit of the rule, stated: motion that follows the swing by less
+    than QUIET_STOP_S is taken as part of it."""
+    clean = _axis_off_x_deg(_axis_fit_log())
+    assert _axis_off_x_deg(_axis_fit_log(late=0.5)) > clean + 20.0
+
+
+# -- the axis fit's report through replay_trial: flags only -------------------
+
+def _axis_fit_report(samples, **extra):
+    import imu_calibration_config
+    cap = {}
+    params = dict(imu_calibration_config.REFERENCE_REPLAY_CONFIG, **extra)
+    t, angle = tuner.replay_trial(samples, params, tick_s=tuner.ANALYSIS_TICK_S, capture=cap)
+    assert len(t) > 0
+    return cap["axis_fit"], cap, angle
+
+
+def test_a_clean_swing_has_a_report_and_no_flags():
+    rep, _, _ = _axis_fit_report(_axis_fit_log())
+    assert rep["closed"] and rep["late_n"] == 0 and rep["flags"] == []
+
+
+def test_the_opening_fit_has_no_report():
+    rep, _, _ = _axis_fit_report(_axis_fit_log(), flex_axis_fit="opening")
+    assert rep is None
+
+
+def test_handling_after_the_swing_settled_is_flagged_and_the_swing_is_untouched():
+    """Flag only: up to the handling the angle is the clean log's, and the
+    axis is the clean log's."""
+    clean_rep, clean_cap, clean = _axis_fit_report(_axis_fit_log())
+    rep, cap, late = _axis_fit_report(_axis_fit_log(late=1.2))
+    assert rep["flags"] == ["motion_after_swing_settled"] and rep["late_n"] == 150
+    assert np.array_equal(cap["flex_axis"], clean_cap["flex_axis"])
+    n = int(round((2.5 + 0.15 + 6 * 0.45 + 1.0) / tuner.ANALYSIS_TICK_S))
+    assert np.array_equal(late[:n], clean[:n], equal_nan=True)
+
+
+def _brief_hold_swing(off_deg, hold_s):
+    """Known regression 1: brief motion at the zero off the swing axis, a
+    hold, then a swing about x."""
+    c, s = math.cos(math.radians(off_deg)), math.sin(math.radians(off_deg))
+    segs = [(250, _CALM), (8, (1.6 * c, 1.6 * s, 0.0)), (int(round(hold_s * 100)), _CALM)]
+    for k in range(6):
+        amp = 3.0 * (0.85 ** k) * (1 if k % 2 == 0 else -1)
+        segs.append((45, (amp, 0.0, 0.0)))
+    segs.append((250, _CALM))
+    return _gyro_segments(segs)
+
+
+def test_known_regression_brief_motion_then_a_hold_over_two_seconds_is_flagged():
+    rep, cap, _ = _axis_fit_report(_brief_hold_swing(60.0, 2.3))
+    off = float(np.degrees(np.arccos(min(1.0, abs(float(cap["flex_axis"][0]))))))
+    assert off > 55.0                       # the axis IS wrong; this PR only says so
+    assert _axis_off_x_deg(_brief_hold_swing(60.0, 2.3), flex_axis_fit="opening") < 6.0
+    assert rep["n_fit"] == 8 and "axis_fit_weak_then_motion" in rep["flags"]
+    # A hold under two seconds: the fit is capped, not closed. It takes the
+    # first 17 samples of the swing to reach 25 and the axis is right, as it
+    # is under the opening rule. Both flags still fire, truthfully: the fit
+    # spanned a quiet, and most of the swing came after it closed.
+    rep, cap, _ = _axis_fit_report(_brief_hold_swing(60.0, 1.9))
+    assert float(np.degrees(np.arccos(min(1.0, abs(float(cap["flex_axis"][0])))))) < 6.0
+    assert rep["n_fit"] == 25
+    assert rep["flags"] == ["motion_after_swing_settled", "axis_fit_spans_quiet"]
+
+
+def test_known_regression_motion_before_the_quiet_second_is_up_is_flagged():
+    segs = [(250, _CALM), (26, (2.0, 0.0, 0.0)), (90, _CALM), (100, (0.0, 3.0, 0.0)), (250, _CALM)]
+    rep, cap, _ = _axis_fit_report(_gyro_segments(segs))
+    assert abs(float(cap["flex_axis"][1])) > 0.9            # taken by the second motion
+    assert _axis_off_x_deg(_gyro_segments(segs), flex_axis_fit="opening") < 1.0
+    assert rep["flags"] == ["axis_fit_spans_quiet"] and rep["max_span_s"] == pytest.approx(0.91, abs=1e-6)
+
+
+def test_known_regression_a_dropout_inside_the_quiet_is_flagged():
+    segs = [(250, _CALM), (30, (2.0, 0.0, 0.0)), (30, _CALM), (30, _CALM), (100, (0.0, 3.0, 0.0)), (250, _CALM)]
+    log = _gyro_segments(segs, gap_before=3, gap_s=2.5)
+    rep, cap, _ = _axis_fit_report(log)
+    assert abs(float(cap["flex_axis"][1])) > 0.9            # the stop never fired
+    assert _axis_off_x_deg(log, flex_axis_fit="opening") < 1.0
+    assert rep["flags"] == ["axis_fit_spans_quiet"] and rep["max_span_s"] > 2.5
+    # The same log without the dropout: 3.1 s of quiet closes the fit.
+    rep, cap, _ = _axis_fit_report(_gyro_segments(segs[:3] + [(280, _CALM)] + segs[4:]))
+    assert abs(float(cap["flex_axis"][0])) > 0.999
+    assert rep["flags"] == ["motion_after_swing_settled"]
+
+
+def test_a_sample_with_no_timestamp_does_not_count_as_a_gap():
+    """Independent review of the flags, 2026-11-20: a gyro sample stamped 0
+    left last_ts at 0, and the next sample's difference from 0 (its absolute
+    timestamp) went into the span, giving a pause of 1.7e9 s on an ordinary
+    swing. An unknown interval is the nominal 10 ms."""
+    log = _axis_fit_log()
+    for s in log:
+        s["phone_ts_ms"] += 1_763_000_000_000        # epoch milliseconds
+    clean, _, clean_angle = _axis_fit_report(log)
+    assert clean["flags"] == [] and clean["max_span_s"] < 0.5
+    gyro = [s for s in log if s["sensor"] == "gyro"]
+    gyro[300]["phone_ts_ms"] = 0                     # mid-swing
+    rep, _, angle = _axis_fit_report(log)
+    assert rep["flags"] == [] and rep["max_span_s"] == pytest.approx(clean["max_span_s"], abs=0.02)
+    for s in gyro[260:400:3]:
+        s["phone_ts_ms"] = 0
+    rep, _, _ = _axis_fit_report(log)
+    assert rep["flags"] == [] and rep["max_span_s"] < 0.5

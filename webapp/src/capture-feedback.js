@@ -57,6 +57,44 @@ export function beepsDue(prevWholeSeconds, nextValue) {
   return Math.max(0, wholeSeconds(nextValue) - prevWholeSeconds);
 }
 
+/// One line for a trial whose flexion-axis fit raised a flag, or null when
+/// there is nothing to say: no report (an older record or an older wasm), or
+/// a report with no flags.
+///
+/// The flags come from the scoring core (`AxisFitReport::flags` in
+/// mobile-imu-core, `FlexAxisEstimator.fit_report` in imu_flex_axis.py). They
+/// change no angle and no score, and nothing here drops or refuses a trial:
+/// the line says what happened and leaves the judgement to the reader, like
+/// lateralNote.
+///
+///   axis_fit_weak_then_motion   the axis was fitted on a brief movement and
+///                               more movement came after the fit closed
+///   motion_after_swing_settled  more movement after the fit closed. Usually
+///                               handling after the swing died; for a fit
+///                               that was filled up to its cap it is the
+///                               rest of the swing, so the text does not say
+///                               which
+///   axis_fit_spans_quiet        the fit took in movement on both sides of a
+///                               long pause, or of a gap in the samples
+export function axisFitNote(axisFit) {
+  if (!axisFit || !Array.isArray(axisFit.flags) || axisFit.flags.length === 0) return null;
+  const has = (f) => axisFit.flags.includes(f);
+  const parts = [];
+  if (has('axis_fit_weak_then_motion')) {
+    const n = Number.isFinite(axisFit.n_fit) ? ` (${axisFit.n_fit} samples)` : '';
+    parts.push(`the swing axis was set by a brief movement${n}, and more movement came after it, so the angles may be too small`);
+  } else if (has('motion_after_swing_settled')) {
+    parts.push('there was more movement after the swing axis was set; the axis is from the movement before it');
+  }
+  if (has('axis_fit_spans_quiet')) {
+    const s = Number.isFinite(axisFit.max_span_s) ? ` for ${axisFit.max_span_s.toFixed(1)} s` : '';
+    parts.push(`the movement paused${s}, or samples were lost, and then went on, so the swing axis may mix two movements`);
+  }
+  if (parts.length === 0) return null;
+  const text = parts.join('; ');
+  return `Check this trial: ${text}.`;
+}
+
 /// One line describing how much of a trial happened out of the flexion plane.
 ///
 /// Returns null when there is nothing to say -- the trial has no lateral

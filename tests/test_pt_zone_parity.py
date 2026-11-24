@@ -349,7 +349,22 @@ def test_the_phone_replays_on_the_reference_footing():
     assert tick and float(tick.group(1)) == tuner.ANALYSIS_TICK_S
     assert ref["gravity_seed"] is True   # the Rust AHRS always gravity-seeds
     footing = re.search(r'pub const SCORING_FOOTING: &str = "([^"]+)";', replay_rs)
-    assert footing and footing.group(1) == "ref-100hz-ema0.5-flex"
+    assert footing and footing.group(1) == "ref-100hz-ema0.5-flexrec"
+    assert ref["flex_axis_fit"] == "recording"
+    assert "flex_axis_fit: FlexAxisFit::Recording," in body
+    # The whole-recording fit's constants, both sides.
+    import imu_flex_axis as fa
+    flex_rs = open(os.path.join(core, "flex_axis.rs"), encoding="utf-8").read()
+    for name, value in (("QUIET_STOP_S", fa.QUIET_STOP_S), ("DEFAULT_THRESHOLD", fa.DEFAULT_THRESHOLD),
+                        ("QUIET_STOP_WEAK_S", fa.QUIET_STOP_WEAK_S),
+                        ("MAX_GRAVITY_TILT_COS", fa.MAX_GRAVITY_TILT_COS)):
+        m = re.search(rf"pub const {name}: f64 = ([0-9.]+);", flex_rs)
+        assert m and float(m.group(1)) == value, name
+    m = re.search(r"pub const MIN_COMMIT_SAMPLES: usize = (\d+);", flex_rs)
+    assert m and int(m.group(1)) == fa.MIN_COMMIT_SAMPLES
+    # Both sides tie the weak-fit cap to the opening rule's count.
+    assert "pub const QUIET_STOP_MIN_SAMPLES: usize = MIN_COMMIT_SAMPLES;" in flex_rs
+    assert fa.QUIET_STOP_MIN_SAMPLES == fa.MIN_COMMIT_SAMPLES
 
 
 def test_the_selectable_superset_matches_between_languages():

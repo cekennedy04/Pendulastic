@@ -9,6 +9,8 @@ import { MAS_FIELDS } from './mas-store.js';
 
 const ACCEPTED = new Set([
   // v7 carries each trial's score_formula_id and scoring_footing.
+  // v8 adds each trial's axis_fit (capture-quality flags); trends ignore it.
+  'pendulastic/session-export/v8',
   'pendulastic/session-export/v7',
   // v6 marks deliberate research recordings; v5 keeps unscored trials with
   // `params: null`. Both are read through the same paths as v4 -- a reader

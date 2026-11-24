@@ -39,8 +39,19 @@ deliberately an online algorithm rather than a batch PCA: it accumulates,
 exposes a provisional axis immediately (so there is never a window with no
 axis at all), and commits a refined estimate after MIN_COMMIT_SAMPLES
 qualifying samples. Both call sites drive it through the same `update()`, so
-replay and live cannot diverge -- which is the property that matters, since
-imu_calibration_tuner exists precisely to reproduce the server's arithmetic.
+a replay whose config does not name a fit reproduces the server's arithmetic.
+(On the reference footing replay deliberately does NOT: see "Scored replay".)
+
+Scored replay (2026-11-19)
+--------------------------
+A replay is not live: it has the whole recording. On the reference footing
+(imu_calibration_config.REFERENCE_REPLAY_CONFIG, "flex_axis_fit": "recording")
+replay_trial uses FlexAxisEstimator.whole_recording(), which accumulates the
+same second moment over the whole swing, closes after QUIET_STOP_S of quiet
+(a fit with few fast samples is handled as QUIET_STOP_MIN_SAMPLES describes),
+and does not level the result. The live server, and any replay whose config
+does not name a fit, keep the 25-sample levelled rule described above, so live
+and replay now differ on purpose on that footing.
 
 The vectors are NOT mean-centred: a rotation axis is a direction that the
 gyro vector lies along (in both signs across an oscillation), so the raw
@@ -83,6 +94,60 @@ MIN_COMMIT_SAMPLES = 25
 # axis is kept.
 MAX_GRAVITY_TILT_COS = 0.5      # 0.5 => 30 deg off horizontal
 
+# Whole-recording fit only: once the gyro has stayed under the threshold for
+# this long after the first qualifying sample, the fit is closed and later
+# samples are ignored. A swing passes under 1 rad/s only briefly at each
+# reversal (a half period is about 0.5 s), so one second of quiet means the
+# swing is over, and whatever moves the phone after that is not the swing: the
+# leg being lifted back, the phone being unstrapped. Tested 2026-11-19 by
+# appending such motion to corpus recordings: without the stop, 2.5 s of
+# tumbling moved the axis by more than 10 deg on 39 of 63; with it, on none.
+# (One recording's axis differs by 12.7 deg from the no-stop axis with nothing
+# appended, because it has real motion after a quiet second.) It does nothing
+# for a leg caught while it is still swinging -- no axis rule does, and the
+# score is wrong on every rule.
+#
+# The quiet clock is the sum of the gyro sample intervals the filter integrates
+# (the caller's dt), so a sample with a missing or implausible timestamp counts
+# as the nominal 10 ms.
+QUIET_STOP_S = 1.0
+
+# A fit with fewer qualifying samples than this when the quiet second arrives
+# is treated differently, because two recordings look the same up to that
+# point and want opposite things:
+#
+#   * a leg caught a moment after release, held, then swinging on: the fit so
+#     far is the let-go transient and the swing is still to come (independent
+#     review, 2026-11-19: closing on the transient alone gave 24 deg of axis
+#     error on a synthetic 1.1 s catch);
+#   * a weak swing that is already over, then the leg or the phone is touched:
+#     the fit so far is the swing and what comes next must be kept out
+#     (pre-merge review, 2026-11-19: with no close below 50 samples, 2 rad/s
+#     for 49 samples followed 1.5 s later by handling gave an axis 90 deg off).
+#
+# No count or time separates them, so below this count the fit falls back to
+# what the opening rule does: it stays open, but takes no more than this many
+# samples in total (QUIET_STOP_MIN_SAMPLES is the opening rule's 25). Late
+# motion can then contribute at most as many samples as it could under the
+# opening rule, and a swing that follows a catch still gets in up to the same
+# count. Measured on the two synthetic cases: weak swing of 22 samples plus a
+# bump 1.3 s later, 1.4 deg (opening rule 1.3, no cap 89); catch of 1.1 s then
+# swing, 15.2 deg (opening rule 14.5, closing on the transient 23.7, no cap
+# 6.6). So the cap gives up the better answer on the catch to be no worse than
+# the opening rule on the weak swing.
+QUIET_STOP_MIN_SAMPLES = MIN_COMMIT_SAMPLES
+
+# ...and a fit below that count closes anyway once the quiet has lasted this
+# long. The app stops recording after 5 s of stillness, so a touch can arrive
+# up to 5 s after a weak swing has died; past 2 s it is kept out entirely,
+# which the opening rule does not do. The cost is a catch held longer than
+# this: the fit is then the transient alone.
+QUIET_STOP_WEAK_S = 2.0
+
+# fit_report() thresholds. Flags only; see FlexAxisEstimator.fit_report.
+LATE_MOTION_ENERGY_RATIO = 0.1
+SPAN_QUIET_S = 0.8
+
 
 class FlexAxisEstimator:
     """Online principal-axis estimator. Feed it raw gyro vectors via update();
@@ -90,12 +155,27 @@ class FlexAxisEstimator:
     above-threshold sample) and `committed` for whether it has settled."""
 
     __slots__ = ("_threshold", "_min_samples", "_m", "_n", "_axis",
-                 "_committed", "_first", "_gravity", "_leveled")
+                 "_committed", "_first", "_gravity", "_leveled", "_level",
+                 "_quiet_stop", "_quiet", "_closed", "_capped",
+                 "_late_n", "_late_energy", "_since_fast", "_max_span")
 
     def __init__(self, threshold: float = DEFAULT_THRESHOLD,
-                 min_samples: int = MIN_COMMIT_SAMPLES):
+                 min_samples: Optional[int] = MIN_COMMIT_SAMPLES,
+                 level: bool = True):
         self._threshold = float(threshold)
-        self._min_samples = int(min_samples)
+        # None: never commit on a count. The caller feeds every sample it has
+        # and calls finalize() (see whole_recording()).
+        self._min_samples = None if min_samples is None else int(min_samples)
+        self._level = bool(level)
+        self._quiet_stop: Optional[float] = None
+        self._quiet = 0.0
+        self._closed = False
+        self._capped = False
+        # Report only (fit_report); none of these reaches the axis.
+        self._late_n = 0
+        self._late_energy = 0.0
+        self._since_fast = 0.0
+        self._max_span = 0.0
         self._m = np.zeros((3, 3), dtype=float)
         self._n = 0
         self._axis: Optional[np.ndarray] = None
@@ -103,6 +183,127 @@ class FlexAxisEstimator:
         self._first: Optional[np.ndarray] = None
         self._gravity: Optional[np.ndarray] = None
         self._leveled = False
+
+    @classmethod
+    def whole_recording(cls, threshold: float = DEFAULT_THRESHOLD) -> "FlexAxisEstimator":
+        """The estimator a SCORED REPLAY uses: fed every gyro sample from the
+        zero until the swing has died (QUIET_STOP_S of quiet, reported by the
+        caller through quiet()) or the recording ends, committed once by
+        finalize(), and not levelled.
+
+        Why this differs from the live rule (paired corpus, 2026-11-19, axis
+        error against the axis the phone actually turned about, medians). On
+        141 trials in the diagnosis: 25 samples levelled (the live rule) 21.1
+        deg; 25 samples not levelled 18.5; whole recording not levelled 10.0;
+        whole recording levelled against the HOLD gravity 12.2. As shipped,
+        through imu_optitrack_validation on 146 trials: 21.1 to 10.9. So the
+        gain is from fitting on the swing instead of the release, and
+        levelling costs about 2 deg under either fit: the swing axis is not
+        horizontal to begin with (a median 8.4 deg out), and the live rule
+        levels against an accelerometer sample taken with the shank already
+        falling (a median 8.4 deg from the hold gravity, reading 0.76 g).
+
+        What not levelling gives up, not measured: a levelled axis is
+        perpendicular to gravity at release, so rotation about the vertical
+        (which the filter cannot observe and so drifts) does not project onto
+        the angle. An unlevelled axis lets it in at the sine of its tilt.
+
+        The live trace cannot look ahead and keeps the 25-sample rule.
+        """
+        est = cls(threshold, min_samples=None, level=False)
+        est._quiet_stop = QUIET_STOP_S
+        return est
+
+    @property
+    def closed(self) -> bool:
+        """True once a whole-recording fit has stopped taking samples."""
+        return self._closed
+
+    def elapsed(self, dt) -> None:
+        """Report the time since the previous gyro sample, as measured (NOT
+        the bounded interval the filter integrates: a dropout counts in
+        full). Report only: it feeds the longest stretch without a
+        qualifying sample that the fit went on to span (fit_report), and
+        never the fit."""
+        if self._quiet_stop is None or self._n == 0 or self._closed:
+            return
+        try:
+            dt = float(dt)
+        except (TypeError, ValueError):
+            return
+        if np.isfinite(dt) and dt > 0.0:
+            self._since_fast += dt
+
+    def fit_report(self) -> Optional[dict]:
+        """How a whole-recording fit ended and what it left out, or None for
+        an opening fit or one that took no sample. Read it after the replay.
+
+        A FLAG, not a correction: nothing here changes the axis, the angle or
+        the score. It exists because the stop rule has known blind spots
+        (PR #130, "Known regressions against main"), each of which leaves the
+        axis fitted on something other than the swing:
+
+        - axis_fit_weak_then_motion: the fit closed holding fewer than
+          QUIET_STOP_MIN_SAMPLES samples and the qualifying motion after it
+          carried at least LATE_MOTION_ENERGY_RATIO times its energy.
+          Typically brief motion at the zero, a hold of over two seconds,
+          then the real swing, which the axis never saw. A stray sample or
+          two after a weak swing is not this.
+        - motion_after_swing_settled: the fit closed and the qualifying
+          motion that followed carried at least LATE_MOTION_ENERGY_RATIO times
+          the energy of the fit (sum of squared rates). The leg or the phone
+          was handled, or swung again, after the swing died. The axis is the
+          first swing; the trace after it is not a pendulum drop.
+        - axis_fit_spans_quiet: two consecutive qualifying samples in the
+          fit are SPAN_QUIET_S or more apart (max_span_s is that interval,
+          so it includes the 10 ms of the sample that ends it), counted on
+          measured time, so a sample dropout counts in full. Two separate
+          motions, or a gap in the stream, may both be inside the fit. A
+          sample without a timestamp counts as the nominal 10 ms.
+        """
+        if self._quiet_stop is None or self._n == 0:
+            return None
+        fit_energy = float(np.trace(self._m))
+        ratio = (self._late_energy / fit_energy) if fit_energy > 0.0 else 0.0
+        flags = []
+        late = self._closed and self._late_n > 0 and ratio >= LATE_MOTION_ENERGY_RATIO
+        if late and self._n < QUIET_STOP_MIN_SAMPLES:
+            flags.append("axis_fit_weak_then_motion")
+        if late:
+            flags.append("motion_after_swing_settled")
+        if self._max_span >= SPAN_QUIET_S:
+            flags.append("axis_fit_spans_quiet")
+        return {
+            "n_fit": int(self._n),
+            "closed": bool(self._closed),
+            "late_n": int(self._late_n),
+            "late_energy_ratio": float(ratio),
+            "max_span_s": float(self._max_span),
+            "flags": flags,
+        }
+
+    def quiet(self, dt) -> None:
+        """Report `dt` seconds spent under the threshold. Only a
+        whole-recording fit that has a qualifying sample counts it. When the
+        quiet since the last qualifying sample reaches QUIET_STOP_S the fit
+        closes if it has QUIET_STOP_MIN_SAMPLES samples; with fewer it stays
+        open but will take no more than that many in total, and closes
+        outright if the quiet reaches QUIET_STOP_WEAK_S."""
+        if self._quiet_stop is None or self._n == 0 or self._closed:
+            return
+        try:
+            dt = float(dt)
+        except (TypeError, ValueError):
+            return
+        if not (np.isfinite(dt) and dt > 0.0):
+            return
+        self._quiet += dt
+        if self._quiet < self._quiet_stop:
+            return
+        if self._n >= QUIET_STOP_MIN_SAMPLES or self._quiet >= QUIET_STOP_WEAK_S:
+            self._closed = True
+        else:
+            self._capped = True
 
     @property
     def axis(self) -> Optional[np.ndarray]:
@@ -127,6 +328,20 @@ class FlexAxisEstimator:
         Ignores sub-threshold samples and does nothing once committed, so
         callers can drive it unconditionally. Gravity is optional: without it
         the axis is simply not levelled."""
+        if self._closed:
+            # Qualifying motion the closed fit leaves out. Counted for
+            # fit_report and nothing else; never raises, as the early return
+            # this replaces never did.
+            try:
+                late = np.asarray(v, dtype=float)
+            except (TypeError, ValueError):
+                return
+            if late.shape == (3,) and np.all(np.isfinite(late)):
+                mag = float(np.linalg.norm(late))
+                if mag >= self._threshold:
+                    self._late_n += 1
+                    self._late_energy += mag * mag
+            return
         if self._committed:
             return
         v = np.asarray(v, dtype=float)
@@ -154,9 +369,22 @@ class FlexAxisEstimator:
             self._first = u.copy()
             self._axis = u.copy()
 
+        if self._n > 0 and self._since_fast > self._max_span:
+            self._max_span = self._since_fast
+        self._since_fast = 0.0
         self._m += np.outer(v, v)
         self._n += 1
-        if self._n >= self._min_samples:
+        self._quiet = 0.0
+        if self._capped and self._n >= QUIET_STOP_MIN_SAMPLES:
+            self._closed = True
+        if self._min_samples is not None and self._n >= self._min_samples:
+            self._commit()
+
+    def finalize(self) -> None:
+        """Commit on whatever has been accumulated. A no-op if already
+        committed or nothing qualified (the axis then stays None). With a
+        single qualifying sample the result is that sample's direction."""
+        if not self._committed and self._n > 0:
             self._commit()
 
     def _commit(self) -> None:
@@ -175,7 +403,7 @@ class FlexAxisEstimator:
         # Level it: drop the component along gravity, so the axis lies in the
         # horizontal plane the knee actually flexes about. Skipped when the
         # axis is too far from horizontal to trust the assumption.
-        if self._gravity is not None:
+        if self._level and self._gravity is not None:
             along = float(np.dot(axis, self._gravity))
             if abs(along) <= MAX_GRAVITY_TILT_COS:
                 leveled = axis - along * self._gravity
@@ -200,6 +428,13 @@ class FlexAxisEstimator:
         self._first = None
         self._gravity = None
         self._leveled = False
+        self._quiet = 0.0
+        self._closed = False
+        self._capped = False
+        self._late_n = 0
+        self._late_energy = 0.0
+        self._since_fast = 0.0
+        self._max_span = 0.0
 
 
 def principal_axis(vectors, threshold: float = DEFAULT_THRESHOLD) -> Optional[np.ndarray]:
