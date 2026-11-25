@@ -107,23 +107,36 @@ def swing(release_deg, l_eq_m=0.37, zeta=0.03, duration_s=60.0, settle_deg=0.05)
 
 def synthesize(release_deg=40.0, *, name="trial", phone=None, radius_m=0.30, l_eq_m=0.37,
                zeta=0.03, gyro_scale=1.0, encoder: EncoderErrors | None = None, seed=0,
-               rest_s=1.5, hold_s=5.0, tail_s=7.0, max_swing_s=60.0, end_tap=False) -> FixtureTrial:
+               rest_s=1.5, hold_s=5.0, tail_s=7.0, max_swing_s=60.0, end_tap=False,
+               knock_deg=0.0, knock_s=0.025, knock_back=True, knock_after_s=2.5) -> FixtureTrial:
     """One whole fixture trial and its encoder log. `phone` is a
-    `neuromech.phone_trial.Phone` (its `lever_m` is ignored: `radius_m` is the lever)."""
+    `neuromech.phone_trial.Phone` (its `lever_m` is ignored: `radius_m` is the lever).
+
+    `knock_deg` plants a knock or a bounce off the peg in the hold: after `knock_after_s`
+    of still hold the arm drops `knock_deg` in `knock_s` and (with `knock_back`) returns as
+    fast; the `hold_s` hold and the release follow from wherever that leaves it."""
     from neuromech import phone_trial as PT          # slow import; only when synthesising
 
     phone = phone or PT.Phone()
     enc = encoder or EncoderErrors()
     rng = np.random.default_rng(seed)
 
-    sw = swing(release_deg, l_eq_m=l_eq_m, zeta=zeta, duration_s=max_swing_s)
     lift_s = 1.875 * math.radians(abs(release_deg)) / LIFT_PEAK_RAD_S
-    parts = [np.zeros(int(round(rest_s * FS_SIM))), _minjerk(0.0, release_deg, lift_s),
-             np.full(int(round(hold_s * FS_SIM)), float(release_deg)), sw,
+    level, knock = float(release_deg), []
+    if knock_deg:
+        knock = [np.full(int(round(knock_after_s * FS_SIM)), level), _minjerk(level, level - knock_deg, knock_s)]
+        if knock_back:
+            knock.append(_minjerk(level - knock_deg, level, knock_s))
+        else:
+            level -= knock_deg
+    sw = swing(level, l_eq_m=l_eq_m, zeta=zeta, duration_s=max_swing_s)
+    parts = [np.zeros(int(round(rest_s * FS_SIM))), _minjerk(0.0, release_deg, lift_s), *knock,
+             np.full(int(round(hold_s * FS_SIM)), level), sw,
              np.full(int(round(tail_s * FS_SIM)), float(sw[-1]))]
     phi = np.concatenate(parts)
     t = np.arange(len(phi)) / FS_SIM
-    t_rel = (len(parts[0]) + len(parts[1]) + len(parts[2])) / FS_SIM
+    t_rel = sum(len(p) for p in parts[:-2]) / FS_SIM
+    t_knock = (len(parts[0]) + len(parts[1]) + len(knock[0])) / FS_SIM if knock else None
     if end_tap:
         # The run sheet's end tap (raw mode): a knuckle on the still arm, 2 s before the
         # stop. A 20 Hz ring of 0.1 deg that both sensors see.
@@ -165,7 +178,8 @@ def synthesize(release_deg=40.0, *, name="trial", phone=None, radius_m=0.30, l_e
 
     wn = math.sqrt(G / l_eq_m)
     truth = {
-        "name": name, "release_deg": float(release_deg), "release_t_phone_s": float(t_rel),
+        "name": name, "release_deg": float(level), "release_t_phone_s": float(t_rel),
+        "knock_t_phone_s": t_knock, "knock_deg": float(knock_deg),
         "release_t_encoder_s": float(t_rel - enc.start_s), "clock_offset_s": float(enc.start_s),
         "radius_m": float(radius_m), "l_eq_m": float(l_eq_m), "zeta": float(zeta),
         "f_small_angle_hz": wn * math.sqrt(1 - zeta ** 2) / (2 * math.pi),

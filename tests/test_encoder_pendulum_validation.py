@@ -901,8 +901,13 @@ def test_an_app_fault_is_a_session_line_that_fails(session):
     assert rows[2]["pass_all"] is False and V.is_assessed(rows[2])
     vs = {v["criterion"]: v for v in V.verdicts(rows)}
     assert vs["APP*"]["verdict"] == "FAIL" and rows[2]["trial_id"] in vs["APP*"]["value"]
-    assert vs["A7"]["verdict"] == "FAIL"                               # "every cell passes" no longer holds
-    assert {v["criterion"]: v for v in V.verdicts(session[2])}["APP*"]["verdict"] == "PASS"
+    before = {v["criterion"]: v for v in V.verdicts(session[2])}
+    assert before["APP*"]["verdict"] == "PASS"
+    # A1 to A5 means A1 to A5: the fault is on its own line and moves no other
+    assert rows[2]["pass_A1_A5"] is session[2][2]["pass_A1_A5"]
+    for c in ("A1", "A3", "A4", "A5", "A7"):
+        assert vs[c]["verdict"] == before[c]["verdict"] and vs[c]["value"] == before[c]["value"]
+    assert "A1 to A5" in vs["A7"]["value"]
     md = V.summary_markdown(rows, [session[3]])
     assert "FAIL (app fault: zero_misplaced_by_app)" in md
 
@@ -925,7 +930,9 @@ def test_the_thresholds_that_decide_whether_a_swing_is_judged_are_listed_as_prop
     consts = dict(V.provisional_constants())
     for name in ("HOLD_STILL_MAX_RAD_S", "PAIRING_MIN_XCORR", "PAIRING_PEAK_RATE_RATIO",
                  "PAIRING_RELEASE_ANGLE_TOL_DEG", "ZERO_WINDOW_S", "SETTLED_RATE_RAD_S", "SETTLED_FOR_S",
-                 "LAG_SEARCH_S"):
+                 "LAG_SEARCH_S", "RELEASE_CANDIDATE_FRAC", "RELEASE_STILL_S", "RELEASE_TRAVEL_S",
+                 "RELEASE_NEAR_TOL_S", "TAIL_AFTER_SETTLE_S", "MIN_SWING_COVERED_S", "APP_RELEASE_RATE_RAD_S",
+                 "ZERO_WIDEBAND_SPAN_S", "ZERO_NOISE_SIGMAS"):
         assert name in V.GATING_THRESHOLD_NAMES and consts[name] == getattr(V, name)
     md = V.summary_markdown(session[2], [session[3]])
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1005,6 +1012,11 @@ def test_a_manifest_without_timestamps_is_paired_in_manifest_order_and_says_so(s
         assert abs(r["clock_offset_release_s"] - session[1][r["trial_id"]]["clock_offset_s"]) < 0.005
     assert sess["order_note"] in V.summary_markdown(rows, [sess])
     assert "order_note" not in session[3]
+    # an order nothing verifies is treated as an allowed count mismatch is: never a PASS
+    assert all(r["pairing_order_unverified"] for r in rows)
+    vs = {v["criterion"]: v for v in V.verdicts(rows)}
+    assert not any(v["verdict"] == "PASS" for v in vs.values())
+    assert vs["A1"]["verdict"] == "INCOMPLETE" and "6/6 swings assessed" in vs["A1"]["value"]
 
 
 def test_a_wrong_channel_count_is_refused_with_its_reason(base, tmp_path, capsys):
@@ -1042,3 +1054,179 @@ def test_a_non_finite_phone_sample_is_refused_with_its_reason(base, tmp_path, ca
     (tmp_path / "junk.jsonl").write_text('{"t": 1.0, "role": "distal"\n', encoding="utf-8")
     with pytest.raises(V.ValidationError, match="not JSON"):
         V.load_phone_export(str(tmp_path / "junk.jsonl"))
+
+
+# ───────────────────────── second review ─────────────────────────
+def _knocked(tmp, name, **kw):
+    tr = S.synthesize(40.0, name=name, seed=3, knock_deg=1.5, knock_s=0.025, **kw)
+    phone = S.write(tr, str(tmp), str(tmp / f"{name}.bin"))
+    return tr, V.analyse_trial(phone, str(tmp / f"{name}.bin"), radius_m=0.30, encoder_opts=ENC)
+
+
+@pytest.mark.parametrize("back, noise", [(True, 0.0), (False, 0.0), (True, 0.05)])
+def test_a_knock_in_the_hold_that_the_encoder_saw_is_not_the_apps_fault(tmp_path, back, noise):
+    """2.5 s into the hold the arm is knocked 1.5 deg in 25 ms (and back, or not), then held
+    5 s and released. The app zeroes on the knock, as it is built to on a 1 rad/s departure.
+    The 8 Hz rate used for alignment smooths the knock to under 0.5 rad/s; read wide-band,
+    the encoder saw it at well over 1 rad/s. A fixture fault, not an app fault."""
+    tr, row = _knocked(tmp_path, "knock", knock_back=back, encoder=S.EncoderErrors(noise_deg=noise))
+    assert abs(row["app_zero_phone_s"] - tr.truth["knock_t_phone_s"]) < 0.06      # the app did zero on it
+    assert row["zero_after_release_ms"] < -4500.0
+    assert row["encoder_peak_rate_at_zero_rad_s"] > V.APP_RELEASE_RATE_RAD_S
+    assert row["encoder_peak_rate_at_zero_rad_s"] > 5 * row["encoder_wideband_noise_rad_s"]
+    assert "zero_on_other_motion" in row["flags"] and "zero_misplaced_by_app" not in row["flags"]
+    assert row["app_fault"] == "" and row["pass_no_app_fault"] is not False and row["pass_all"] is None
+    assert V._verdict(row).startswith("NOT ASSESSED") and "UNRESOLVED" in V._verdict(row)
+
+
+def test_a_zero_in_a_still_hold_is_still_the_apps_fault_on_a_noisy_encoder(planted, monkeypatch):
+    """Encoder noise of 0.05 deg must not pass for a knock: nothing moved, the app is at fault."""
+    _altered_app(monkeypatch, lambda a: a.update(t_zero=a["t_zero"] - 3.0))
+    row = _again(planted)
+    assert row["encoder_peak_rate_at_zero_rad_s"] < 0.5 * V.ZERO_REAL_DEPARTURE_FRAC * V.APP_RELEASE_RATE_RAD_S
+    assert row["app_fault"] == "zero_misplaced_by_app" and row["pass_all"] is False
+
+
+def test_an_encoder_too_noisy_to_see_a_knock_says_it_cannot_tell(base, monkeypatch):
+    monkeypatch.setattr(V, "ZERO_NOISE_SIGMAS", 1e6)                    # as if the noise swamped the threshold
+    _altered_app(monkeypatch, lambda a: a.update(t_zero=a["t_zero"] - 4.0))
+    row = _again(base)
+    assert "zero_encoder_cannot_tell" in row["not_assessed_because"] and row["app_fault"] == ""
+    assert "UNRESOLVED" in V._verdict(row)
+
+
+def test_an_app_fault_the_encoder_proves_is_reported_on_a_swing_that_cannot_be_assessed(session, base, monkeypatch):
+    """The app zeroes 4 s before the release in a still hold, and the swing is read for only
+    10 s (not settled). A1 to A5 cannot be assessed; the app fault is proven all the same and
+    is neither blanked on the swing nor missing from the session's APP* line."""
+    _altered_app(monkeypatch, lambda a: a.update(t_zero=a["t_zero"] - 4.0))
+    row = _again(base, end_s=10.0)
+    assert "not_settled" in row["not_assessed_because"] and row["app_fault"] == "zero_misplaced_by_app"
+    assert row["pass_A1_rmse"] is None and row["pass_A1_A5"] is None
+    assert row["pass_no_app_fault"] is False and row["pass_all"] is False
+    assert V._verdict(row).startswith("FAIL (app fault: zero_misplaced_by_app") and "not assessed" in V._verdict(row)
+    assert V._verdict_a15(row).startswith("NOT ASSESSED")
+    rows = [dict(r) for r in session[2]]
+    rows[2]["flags"] = "zero_not_at_release;zero_misplaced_by_app;not_settled"
+    rows[2].update(V.judge_trial(rows[2]))
+    vs = {v["criterion"]: v for v in V.verdicts(rows)}
+    assert vs["APP*"]["verdict"] == "FAIL" and rows[2]["trial_id"] in vs["APP*"]["value"]
+    assert vs["A1"]["verdict"] == "INCOMPLETE" and "5/6 swings assessed" in vs["A1"]["value"]
+    assert V.overall_verdict(V.verdicts(rows)).startswith("FAIL")
+    # Not proven where the pairing or the clocks are themselves in doubt: no verdict either way.
+    rows[2]["flags"] = "pairing_suspect;lag_pegged"
+    rows[2].update(V.judge_trial(rows[2]))
+    assert rows[2]["pass_no_app_fault"] is None and rows[2]["pass_all"] is None
+    assert {v["criterion"]: v for v in V.verdicts(rows)}["APP*"]["verdict"].startswith("UNRESOLVED")
+
+
+def test_a_session_without_manifest_timestamps_is_never_a_pass(session, tmp_path):
+    """No trial has a timestamp. The manifest's order is used, which nothing verifies: every
+    line that would have read PASS reads INCOMPLETE, and so does the session."""
+    folder = _copy_session(session[0], tmp_path / "s")
+    _edit_manifest(folder, lambda man: [t.pop("timestamp") for t in man["trials"]])
+    S_ = V.load_session(folder)
+    assert S_["pairing_by"].startswith("manifest order") and "6 of 6" in S_["order_note"]
+    rows = [dict(r, pairing_order_unverified=True) for r in session[2]]      # the same swings, order unverified
+    before = {v["criterion"]: v["verdict"] for v in V.verdicts(session[2])}
+    after = {v["criterion"]: v["verdict"] for v in V.verdicts(rows)}
+    assert "PASS" in before.values() and "PASS" not in after.values()
+    assert all(after[c] == "INCOMPLETE" for c, v in before.items() if v == "PASS")
+    assert all(after[c] == v for c, v in before.items() if v != "PASS")
+    assert not V.overall_verdict(V.verdicts(rows)).startswith("PASS")
+
+
+def test_an_explicit_pairing_does_not_need_the_manifest_order(session, tmp_path):
+    """Pairing stated, not inferred: the manifest carries each trial's `trial_id`, or the rig
+    log names each row's export in a `phone_file` column. Timestamps are then not needed, the
+    manifest order does not matter, nothing is flagged, and the report says how it paired."""
+    ids = list(session[1])
+    by_id = _copy_session(session[0], tmp_path / "by_id")
+
+    def ids_no_stamps_reversed(man):
+        for t, tid in zip(man["trials"], ids):
+            t.pop("timestamp")
+            t["trial_id"] = tid
+        man["trials"].reverse()
+
+    _edit_manifest(by_id, ids_no_stamps_reversed)
+    S1 = V.load_session(by_id)
+    assert S1["pairing_by"].startswith("trial_id") and "order_note" not in S1
+    assert [os.path.basename(p["_path"]) for p in S1["phones"]] == [os.path.basename(p["_path"]) for p in session[3]["phones"]]
+
+    by_file = _copy_session(session[0], tmp_path / "by_file")
+    files = [os.path.basename(p["_path"]) for p in session[3]["phones"]]
+    _edit_manifest(by_file, lambda man: ([t.pop("timestamp") for t in man["trials"]], man["trials"].reverse()))
+
+    def name_files(cols, rows):
+        for r, f in zip(rows, files):
+            r["phone_file"] = f
+        return cols + ["phone_file"], rows
+
+    _edit_log(by_file, name_files)
+    rows, S2 = V.analyse_session(by_file)
+    assert S2["pairing_by"].startswith("phone_file") and "order_note" not in S2
+    assert [r["trial_id"] for r in rows] == ids and [r["phone_file"] for r in rows] == files
+    for r in rows:
+        assert r["flags"] == "" and not r.get("pairing_order_unverified")
+        assert abs(r["clock_offset_release_s"] - session[1][r["trial_id"]]["clock_offset_s"]) < 0.005
+    assert {v["criterion"]: v for v in V.verdicts(rows)}["A1"]["verdict"] == "PASS"
+    assert "Paired by: phone_file" in V.summary_markdown(rows, [S2])
+    assert "Paired by: manifest timestamp" in V.summary_markdown(session[2], [session[3]])
+    # a name the manifest does not have is refused, not guessed at
+    _edit_log(by_file, lambda cols, rows: rows[0].update(phone_file="nothing.jsonl"))
+    with pytest.raises(V.ValidationError, match="phone_file"):
+        V.load_session(by_file)
+
+
+def test_the_overall_verdict_is_the_worst_line():
+    def lines(*vs):
+        return [dict(criterion=f"X{i}", verdict=v) for i, v in enumerate(vs)]
+
+    un = "UNRESOLVED (1 swing(s) set aside ...)"
+    assert V.overall_verdict(lines("PASS", "PASS", "NOT EVALUATED (no PT score)")).startswith("PASS")
+    assert "NOT EVALUATED" in V.overall_verdict(lines("PASS", "NOT EVALUATED (no PT score)"))
+    assert V.overall_verdict(lines("PASS", "INCOMPLETE")).startswith("INCOMPLETE")
+    assert V.overall_verdict(lines("PASS", "NOT ASSESSABLE")).startswith("INCOMPLETE")
+    assert V.overall_verdict(lines("INCOMPLETE", un, "PASS")).startswith("UNRESOLVED")
+    assert V.overall_verdict(lines("NOT ASSESSABLE - UNRESOLVED: 1 swing(s)", "PASS")).startswith("UNRESOLVED")
+    assert V.overall_verdict(lines("INCOMPLETE", un, "FAIL", "PASS")).startswith("FAIL")
+    assert "X2" in V.overall_verdict(lines("INCOMPLETE", un, "FAIL", "PASS"))
+
+
+def test_the_report_and_stdout_carry_one_overall_line_and_a_fail_still_exits_0(session, tmp_path, capsys):
+    """Exit codes say whether the analysis ran (0, 1, 2), not what it found: the limits are
+    PROPOSED, and the synthetic session itself fails Z* and A5. The verdict is the OVERALL line."""
+    folder, _, rows, sess = session
+    overall = V.overall_verdict(V.verdicts(rows))
+    assert overall.startswith("FAIL") and "Z*" in overall
+    md = V.summary_markdown(rows, [sess])
+    assert f"**Overall, iphone: {overall}**" in md
+    assert "| A1-A5 | App fault | Swing |" in md and "passes A1 to A5 and has no app fault" in md
+    assert "unflagged FAIL" in md                                        # the same-angle wrong pair, said plainly
+    assert V.main(["session", folder, "--out", str(tmp_path / "rep")]) == 0
+    out = capsys.readouterr().out
+    assert f"OVERALL (iphone): {overall}" in out.splitlines()[-1] or f"OVERALL (iphone): {overall}" in out
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, "docs", "bench", "FREE_PENDULUM_ENCODER_ANALYSIS.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    assert "unflagged FAIL" in doc and "exit 0" in doc.replace("exits 0", "exit 0")
+
+
+def test_a_session_json_or_manifest_that_is_not_json_is_refused(session, tmp_path, capsys):
+    folder = _copy_session(session[0], tmp_path / "s")
+    sj = os.path.join(folder, "session.json")
+    good = open(sj, encoding="utf-8").read()
+    for bad in (good[:-20], "[1, 2]", good.replace('"phone": {', '"phone": [{', 1).replace('"n/a"},', '"n/a"}],', 1)):
+        with open(sj, "w", encoding="utf-8") as fh:
+            fh.write(bad)
+        assert V.main(["session", folder]) == 2
+        err = capsys.readouterr().err
+        assert "REFUSED" in err and "session.json" in err and "Traceback" not in err
+    with open(sj, "w", encoding="utf-8") as fh:
+        fh.write(good)
+    with open(glob_one(folder, "phone", "*manifest*.json"), "w", encoding="utf-8") as fh:
+        fh.write('{"trials": [')
+    assert V.main(["session", folder]) == 2
+    err = capsys.readouterr().err
+    assert "REFUSED" in err and "manifest" in err
