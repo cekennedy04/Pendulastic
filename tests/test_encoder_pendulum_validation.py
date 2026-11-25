@@ -516,10 +516,10 @@ def test_a_zero_pose_taken_where_the_arm_was_still_is_the_apps_fault_and_is_fail
     still. Nothing on the fixture explains it: the swing is judged, and failed."""
     _altered_app(monkeypatch, lambda a: a.update(t_zero=a["t_zero"] - 4.0))
     row = _again(base)
-    assert "zero_not_at_release" in row["flags"] and "zero_without_motion" in row["flags"]
+    assert "zero_not_at_release" in row["flags"] and "zero_misplaced_by_app" in row["flags"]
     assert row["zero_after_release_ms"] < -3500.0
     assert row["not_assessed_because"] == "" and V.is_assessed(row)
-    assert row["app_fault"] == "zero_without_motion"
+    assert row["app_fault"] == "zero_misplaced_by_app"
     assert row["pass_no_app_fault"] is False and row["pass_all"] is False
     assert V._verdict(row).startswith("FAIL")
 
@@ -679,10 +679,11 @@ def test_a_count_mismatch_stops_the_session(session, tmp_path):
     rows, sess = V.analyse_session(folder, allow_count_mismatch=True)
     assert "COUNT MISMATCH" in sess["pairing_note"]
     # the sixth phone trial has no rig-log row: it is in the table, not dropped
-    assert len(rows) == 6 and "unpaired" in rows[5]["error"] and rows[5]["phone_file"].endswith(".jsonl")
+    assert len(rows) == 7 and "unpaired" in rows[5]["error"] and rows[5]["phone_file"].endswith(".jsonl")
+    assert "unpaired" in rows[6]["error"] and rows[6]["encoder_file"].endswith("_006.bin")    # and so is its encoder file
     vs = {v["criterion"]: v for v in V.verdicts(rows)}
     assert not any(v["verdict"] == "PASS" for v in vs.values())
-    assert vs["A1"]["verdict"] == "INCOMPLETE" and "5/6 swings assessed" in vs["A1"]["value"]
+    assert vs["A1"]["verdict"] == "INCOMPLETE" and "5/7 swings assessed, 2 of them unpaired leftovers" in vs["A1"]["value"]
     md = V.summary_markdown(rows, [sess])
     assert "unpaired" in md and rows[5]["phone_file"] in md
 
@@ -895,7 +896,7 @@ def test_a_restless_hold_is_the_fixtures_only_when_the_encoder_saw_it(base, monk
 
 def test_an_app_fault_is_a_session_line_that_fails(session):
     rows = [dict(r) for r in session[2]]
-    rows[2]["flags"] = "zero_not_at_release;zero_without_motion"
+    rows[2]["flags"] = "zero_not_at_release;zero_misplaced_by_app"
     rows[2].update(V.judge_trial(rows[2]))
     assert rows[2]["pass_all"] is False and V.is_assessed(rows[2])
     vs = {v["criterion"]: v for v in V.verdicts(rows)}
@@ -903,7 +904,7 @@ def test_an_app_fault_is_a_session_line_that_fails(session):
     assert vs["A7"]["verdict"] == "FAIL"                               # "every cell passes" no longer holds
     assert {v["criterion"]: v for v in V.verdicts(session[2])}["APP*"]["verdict"] == "PASS"
     md = V.summary_markdown(rows, [session[3]])
-    assert "FAIL (app fault: zero_without_motion)" in md
+    assert "FAIL (app fault: zero_misplaced_by_app)" in md
 
 
 def test_one_failing_swing_fails_the_criterion_whatever_else_is_unassessable(session):
