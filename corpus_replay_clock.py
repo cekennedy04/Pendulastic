@@ -56,6 +56,21 @@ FITS = ("recording", "opening")
 # calibration switched off, to see how much of the clock's effect goes through it.
 NO_BIAS = "recording-nobias"
 VARIANT_FITS = FITS + (NO_BIAS,)
+# A control, not a footing: the same clock with only the tick grid's origin
+# moved by half a tick. Nothing about the samples changes, so whatever the
+# score, N or verdict does between a clock and its shifted twin is the noise
+# floor of where the grid happens to fall.
+GRID_SHIFT_S = 0.005
+SHIFTED = {"receive+5ms": "receive", "phone+5ms": "phone"}
+# Every replay made for a paired trial. A cache without all of them is refused.
+VARIANTS = tuple(f"{c}/{f}" for c in CLOCKS for f in VARIANT_FITS) \
+    + tuple(f"{c}/recording" for c in SHIFTED)
+# Raise when evaluate_trial, or anything it stores, changes: it is part of the
+# cache key (with the replay config and the replay modules' source).
+CACHE_VERSION = 2
+REPLAY_MODULES = ("imu_calibration_tuner", "imu_calibration_config", "imu_optitrack_validation",
+                  "workbench_engine", "pendulastic_pt_score")
+NO_PHONE_STAMP = "a sample has no phone timestamp"
 SENSORS = ("accel", "gyro", "mag")
 TICK_S = 0.01                     # imu_calibration_tuner.ANALYSIS_TICK_S
 # Receive-clock gaps longer than this separate two bursts (the phone samples
@@ -121,11 +136,23 @@ def restamp(samples: list, clock: str) -> Optional[list]:
     "receive" returns the list as it is. "phone" maps each phone stamp onto
     the desktop epoch with clock_offset's offset_s; None if any sample has no
     phone stamp. The input is never modified.
+
+    "receive+5ms" and "phone+5ms" are that clock with the replay's tick grid
+    moved by GRID_SHIFT_S: the replay starts its grid at the first sample, so
+    a copy of the first magnetometer sample is put GRID_SHIFT_S ahead of it.
+    The reference replay does not fuse the magnetometer, so the copy changes
+    where the ticks fall and nothing else. None without a magnetometer sample.
     """
+    if clock in SHIFTED:
+        base = restamp(samples, SHIFTED[clock])
+        first_mag = next((s for s in base or [] if s["sensor"] == "mag"), None)
+        if first_mag is None:
+            return None
+        return [dict(first_mag, t=base[0]["t"] - GRID_SHIFT_S)] + list(base)
     if clock == "receive":
         return samples
     if clock != "phone":
-        raise ValueError(f"clock must be one of {CLOCKS}, got {clock!r}")
+        raise ValueError(f"clock must be one of {CLOCKS + tuple(SHIFTED)}, got {clock!r}")
     if not samples or any(not s.get("phone_ts_ms") for s in samples):
         return None
     offset = clock_offset(samples)["offset_s"]
@@ -335,8 +362,10 @@ def replay_variant(clock: str, fit: str, probe: dict):
     last consulted, which is the sample before the zero).
 
     The fit NO_BIAS is the reference "recording" fit with the stillness check
-    answering "not still" throughout, so no gyro or accelerometer bias is
-    ever estimated. That is a sensitivity only.
+    answering "not still" throughout, so no gyro bias AND no accelerometer
+    bias is ever estimated (the replay estimates both on the same edge). It
+    therefore removes both calibrations, not the gyro's alone. That is a
+    sensitivity only.
     """
     no_bias = fit == NO_BIAS
     fit = "recording" if no_bias else fit
@@ -351,7 +380,8 @@ def replay_variant(clock: str, fit: str, probe: dict):
         bound = saved[0](validations)
         fed = restamp(bound["fusion_samples"], clock)
         if fed is None:
-            raise ValueError("a sample has no phone timestamp")
+            probe["clock_error"] = NO_PHONE_STAMP
+            raise ValueError(NO_PHONE_STAMP)
         probe["samples"] = fed
         return dict(bound, fusion_samples=fed)
 
@@ -387,9 +417,11 @@ def zero_summary(probe: dict) -> dict:
 
     zero_phone_ms: the phone stamp of the last gyro sample before the zero
     was captured (the stillness check runs on every gyro sample until then).
-    bias_fires: how many times a still window began before the zero; each one
-    re-estimates the gyro and accelerometer bias, so the last one is the bias
-    the swing is integrated with. last_fire_to_zero_s: how long before the
+    bias_fires: how many times a still window began before the zero. It counts
+    stillness rising edges, NOT applied estimates: on each edge the replay
+    re-estimates the gyro and accelerometer bias but applies a gyro axis only
+    if it passes the replay's own significance test and size bound, which is
+    not observed here. last_fire_to_zero_s: how long before the
     zero that last estimate was made. last_fire_mean_rate_rad_s: the mean
     gyro rate over that window (the estimate, before the replay's own
     per-axis significance test and size bound).
@@ -441,8 +473,14 @@ def evaluate_variant(trial: dict, clock: str, fit: str, opt_cache: dict) -> dict
         v.optical_curves = saved_opt
     imu, opt = probe.get("imu"), opt_cache.get(trial["optitrack_path"])
     row["zero"] = zero_summary(probe)
+    # Why there is no replayed curve, kept apart: a recording the phone clock
+    # cannot be built for is not a trial that never zeroed.
+    row["replay_reason"] = ("ok" if imu is not None
+                            else "no phone timestamp" if probe.get("clock_error")
+                            else "never zeroed" if "never zeroed" in str(row.get("imu_error"))
+                            else "other")
     if imu is None:
-        row["zero"]["zero_phone_ms"] = None             # never zeroed
+        row["zero"]["zero_phone_ms"] = None
         return row
     row["zero"]["q_zero"] = [float(x) for x in imu["q_zero"]]
     if "flex_fit" in imu:
@@ -499,9 +537,9 @@ def evaluate_trial(trial: dict) -> dict:
     if not out["paired"]:
         return out
     opt_cache: dict = {}
-    for clock in CLOCKS:
-        for fit in VARIANT_FITS:
-            out["variants"][f"{clock}/{fit}"] = evaluate_variant(trial, clock, fit, opt_cache)
+    for name in VARIANTS:
+        clock, fit = name.split("/")
+        out["variants"][name] = evaluate_variant(trial, clock, fit, opt_cache)
     return out
 
 
@@ -712,11 +750,16 @@ def _score_agreement(rows: list, ref: str, test: str) -> dict:
     return out
 
 
-def compare_clocks(trials: list, fit: str = "recording") -> dict:
+def compare_clocks(trials: list, fit: str = "recording", variants: Optional[tuple] = None) -> dict:
     """Trial by trial: what moving from the receive clock to the phone clock
-    does to the app's score, and whether it moves towards the optical score."""
-    pairs = [(t["variants"][f"receive/{fit}"], t["variants"][f"phone/{fit}"])
-             for t in trials if f"receive/{fit}" in t.get("variants", {})]
+    does to the app's score, and whether it moves towards the optical score.
+
+    `variants` names another pair to compare the same way (first, second);
+    the output's "receive" and "phone" labels then stand for first and second.
+    """
+    first, second = variants or (f"receive/{fit}", f"phone/{fit}")
+    pairs = [(t["variants"][first], t["variants"][second])
+             for t in trials if first in t.get("variants", {}) and second in t.get("variants", {})]
     out = {"n_trials": len(pairs)}
     out["zeroed"] = _status_table(pairs, lambda r: r.get("imu_status") == "ok")
     out["scored"] = _status_table(pairs, lambda r: bool(r.get("imu_scored")))
@@ -847,30 +890,130 @@ def _agreement_same_trials(pairs: list, ref: str, test: str) -> dict:
     """Score and verdict agreement with the optical score on each clock, over
     the trials both sources call interpretable on BOTH clocks, so the two
     columns are the same trials."""
-    import imu_optitrack_validation as v
-    import reliability_stats
     keep = [(a, b) for a, b in pairs
             if all(r.get(f"{ref}_interpretable") and r.get(f"{test}_interpretable") for r in (a, b))]
-    out = {"n": len(keep)}
-    for clock, rows in (("receive", [a for a, _ in keep]), ("phone", [b for _, b in keep])):
-        x, y = _col(rows, f"{ref}_pt"), _col(rows, f"{test}_pt")
-        ok = np.isfinite(x) & np.isfinite(y)
-        za, zb = [r[f"{ref}_zone"] for r in rows], [r[f"{test}_zone"] for r in rows]
-        entry = {"zone_agree": int(sum(p == q for p, q in zip(za, zb))),
-                 "kappa": v.cohen_kappa(za, zb),
-                 "N_equal": int(np.sum(_col(rows, f"{ref}_N") == _col(rows, f"{test}_N")))}
-        if ok.sum() >= 3:
-            entry["pt_icc"] = float(reliability_stats.icc_two_way(x[ok], y[ok])["icc"])
-            entry["pt_abs_diff_median"] = float(np.median(np.abs(y[ok] - x[ok])))
-            entry["pt_abs_diff_p90"] = float(np.percentile(np.abs(y[ok] - x[ok]), 90))
-            entry["pt_abs_diff_max"] = float(np.max(np.abs(y[ok] - x[ok])))
-            # The same without the single largest disagreement, since one
-            # trial can carry an ICC.
-            if ok.sum() >= 4:
-                drop = int(np.argmax(np.abs(y[ok] - x[ok])))
-                xk, yk = np.delete(x[ok], drop), np.delete(y[ok], drop)
-                entry["pt_icc_without_largest"] = float(reliability_stats.icc_two_way(xk, yk)["icc"])
-        out[clock] = entry
+    return {"n": len(keep),
+            "receive": _agreement([a for a, _ in keep], ref, test),
+            "phone": _agreement([b for _, b in keep], ref, test)}
+
+
+def _agreement(rows: list, ref: str, test: str) -> dict:
+    """Verdict, N and score agreement of `test` with `ref` over `rows`, all of
+    which both sources call interpretable."""
+    import imu_optitrack_validation as v
+    import reliability_stats
+    x, y = _col(rows, f"{ref}_pt"), _col(rows, f"{test}_pt")
+    ok = np.isfinite(x) & np.isfinite(y)
+    za, zb = [r[f"{ref}_zone"] for r in rows], [r[f"{test}_zone"] for r in rows]
+    entry = {"zone_agree": int(sum(p == q for p, q in zip(za, zb))),
+             "kappa": v.cohen_kappa(za, zb) if rows else float("nan"),
+             "N_equal": int(np.sum(_col(rows, f"{ref}_N") == _col(rows, f"{test}_N")))}
+    if ok.sum() >= 3:
+        entry["pt_icc"] = float(reliability_stats.icc_two_way(x[ok], y[ok])["icc"])
+        entry["pt_abs_diff_median"] = float(np.median(np.abs(y[ok] - x[ok])))
+        entry["pt_abs_diff_p90"] = float(np.percentile(np.abs(y[ok] - x[ok]), 90))
+        entry["pt_abs_diff_max"] = float(np.max(np.abs(y[ok] - x[ok])))
+        # The same without the single largest disagreement, since one trial
+        # can carry an ICC.
+        if ok.sum() >= 4:
+            drop = int(np.argmax(np.abs(y[ok] - x[ok])))
+            xk, yk = np.delete(x[ok], drop), np.delete(y[ok], drop)
+            entry["pt_icc_without_largest"] = float(reliability_stats.icc_two_way(xk, yk)["icc"])
+    return entry
+
+
+def levels_same_trials(trials: list, variants: tuple) -> dict:
+    """The headline levels of several variants over the SAME trials: each
+    figure is taken over the trials that have it on every variant named.
+
+    held: hold-zeroed RMSE of the sensor angle and the app angle (the
+    validation's figures that need a common zero). aligned: the offset-removed
+    sensor residual. agreement: verdict, N and score against the optical
+    score, over the trials interpretable from both sources on every variant.
+    """
+    have = [t for t in trials if all(name in t.get("variants", {}) for name in variants)]
+
+    def finite_on_all(t, keys):
+        return all(np.isfinite(_f(t["variants"][name].get(k))) for name in variants for k in keys)
+
+    held = [t for t in have if finite_on_all(t, ("track_fit_rmse", "track_shank_rmse"))]
+    aligned = [t for t in have if finite_on_all(t, ("track_fit_sd",))]
+    out = {"n_trials": len(have), "n_held": len(held), "n_aligned": len(aligned),
+           "variants": {}, "agreement": {}}
+    for name in variants:
+        rows = [t["variants"][name] for t in held]
+        entry = {}
+        for label, key in (("sensor_rmse", "track_fit_rmse"), ("app_rmse", "track_shank_rmse")):
+            col = _col(rows, key)
+            entry[f"{label}_median"] = float(np.median(col)) if len(col) else None
+            entry[f"{label}_p90"] = float(np.percentile(col, 90)) if len(col) else None
+        entry["app_gain_median"] = float(np.median(_col(rows, "track_shank_gain"))) if rows else None
+        sd = _col([t["variants"][name] for t in aligned], "track_fit_sd")
+        entry["sensor_rmse_offset_removed_median"] = float(np.median(sd)) if len(sd) else None
+        out["variants"][name] = entry
+    for label, ref, test in (("plain", "shank", "imu"), ("gap_filled", "gfopt", "gfimu")):
+        keep = [t for t in have
+                if all(t["variants"][name].get(f"{ref}_interpretable")
+                       and t["variants"][name].get(f"{test}_interpretable") for name in variants)]
+        out["agreement"][label] = {"n": len(keep), **{
+            name: _agreement([t["variants"][name] for t in keep], ref, test) for name in variants}}
+    return out
+
+
+def mover_overlap(trials: list, with_fit: str = "recording", without_fit: str = NO_BIAS) -> dict:
+    """Are the trials the clock moves with the bias calibration off the same
+    trials it moves with it on?
+
+    Over the trials scored on both clocks under both fits. "both": moved under
+    both fits; "with_only" / "without_only": under one. If the calibration-off
+    movers were the tick-placement share of the calibration-on movers they
+    would be a subset, i.e. without_only would be zero.
+    """
+    names = tuple(f"{c}/{f}" for f in (with_fit, without_fit) for c in CLOCKS)
+    have = [t for t in trials if all(n in t.get("variants", {}) for n in names)]
+
+    def table(on, off):
+        on, off = np.asarray(on, dtype=bool), np.asarray(off, dtype=bool)
+        return {"with": int(on.sum()), "without": int(off.sum()), "both": int(np.sum(on & off)),
+                "with_only": int(np.sum(on & ~off)), "without_only": int(np.sum(~on & off))}
+
+    def val(t, fit, clock, key):
+        return _f(t["variants"][f"{clock}/{fit}"].get(key))
+
+    out = {}
+    for label, prefix in (("stored", "imu"), ("on_screen", "screen")):
+        pt = [t for t in have if all(np.isfinite(_f(t["variants"][n].get(f"{prefix}_pt")))
+                                     for n in names)]
+        d = {fit: np.asarray([val(t, fit, "phone", f"{prefix}_pt") - val(t, fit, "receive", f"{prefix}_pt")
+                              for t in pt]) for fit in (with_fit, without_fit)}
+        nn = [t for t in have if all(np.isfinite(_f(t["variants"][n].get(f"{prefix}_N")))
+                                     for n in names)]
+        zz = [t for t in have if all(t["variants"][n].get(f"{prefix}_interpretable") for n in names)]
+        out[label] = {
+            "n_pt": len(pt),
+            **{f"pt_moved_over_{s}": table(np.abs(d[with_fit]) > s, np.abs(d[without_fit]) > s)
+               for s in SCORE_STEPS},
+            "n_N": len(nn),
+            "N_changed": table(*([val(t, fit, "phone", f"{prefix}_N") != val(t, fit, "receive", f"{prefix}_N")
+                                  for t in nn] for fit in (with_fit, without_fit))),
+            "n_verdict": len(zz),
+            "verdict_changed": table(*([t["variants"][f"phone/{fit}"][f"{prefix}_zone"]
+                                        != t["variants"][f"receive/{fit}"][f"{prefix}_zone"]
+                                        for t in zz] for fit in (with_fit, without_fit))),
+        }
+    return out
+
+
+def grid_shift_control(trials: list) -> dict:
+    """The noise floor: each clock against itself with the tick grid moved by
+    GRID_SHIFT_S and the samples untouched."""
+    out = {}
+    for shifted, clock in SHIFTED.items():
+        res = compare_clocks(trials, variants=(f"{clock}/recording", f"{shifted}/recording"))
+        if res["n_trials"]:
+            out[clock] = {k: res.get(k) for k in ("n_trials", "scored", "interpretable", "stored",
+                                                  "on_screen", "sensor_residual")}
+            out[clock]["app_rmse_change"] = res["app_change"]["rmse_deg"]
     return out
 
 
@@ -934,16 +1077,15 @@ def compare_zero(pairs: list) -> dict:
 
 
 def summarise(trials: list) -> dict:
-    """Every aggregate the report quotes. No participant folder or trial name;
-    participants appear by numeric id only."""
+    """Every aggregate the report quotes. No participant folder, id or trial
+    name: sessions are numbered and participants only counted."""
     out = {"inventory": summarise_inventory(trials),
            "n_paired": sum(t["paired"] for t in trials),
            "variants": {}, "clock_change": {}}
-    for clock in CLOCKS:
-        for fit in VARIANT_FITS:
-            rows = _paired_rows(trials, f"{clock}/{fit}")
-            if rows:
-                out["variants"][f"{clock}/{fit}"] = summarise_variant(rows)
+    for name in VARIANTS:
+        rows = _paired_rows(trials, name)
+        if rows:
+            out["variants"][name] = summarise_variant(rows)
     for fit in VARIANT_FITS:
         if any(f"receive/{fit}" in t.get("variants", {}) for t in trials):
             out["clock_change"][fit] = compare_clocks(trials, fit)
@@ -957,42 +1099,98 @@ def summarise(trials: list) -> dict:
         f"{clock}/{fit}": summarise_variant(_paired_rows(steady, f"{clock}/{fit}"))
         for clock in CLOCKS for fit in FITS} if steady else {}
     out["n_paired_replayed"] = len(replayed)
+    out["alignment_moved"] = int(np.sum(moved))
+    if steady:
+        out["clock_change_same_alignment"] = compare_clocks(steady, "recording")
+    # Bias calibration on and off, on both clocks, over the same trials.
+    four = tuple(f"{c}/{f}" for f in ("recording", NO_BIAS) for c in CLOCKS)
+    if any(all(n in t.get("variants", {}) for n in four) for t in trials):
+        out["bias_levels"] = levels_same_trials(trials, four)
+        out["mover_overlap"] = mover_overlap(trials)
+    out["grid_shift_control"] = grid_shift_control(trials)
+    # Why a replay produced no curve, per variant.
+    out["replay_reasons"] = {}
+    for name in VARIANTS:
+        reasons: dict = {}
+        for r in _paired_rows(trials, name):
+            why = r.get("replay_reason", "not recorded")
+            reasons[why] = reasons.get(why, 0) + 1
+        if reasons:
+            out["replay_reasons"][name] = reasons
     return out
 
 
 # ── running it ────────────────────────────────────────────────────────────────
 
-def _cache_path(cache_dir: str, trial: dict) -> str:
-    key = hashlib.sha1(os.path.abspath(trial["imu"]).encode("utf-8")).hexdigest()[:16]
+def fingerprint() -> str:
+    """What a cached result depends on besides the recording: CACHE_VERSION,
+    the variants, the tick, the reference replay config, and the source of the
+    modules that do the replay, alignment and scoring. Any change to one of
+    them gives every trial a new cache name, so a stale result is never read."""
+    import importlib
+    import imu_calibration_config
+    h = hashlib.sha1()
+    h.update(json.dumps([CACHE_VERSION, VARIANTS, TICK_S, GRID_SHIFT_S,
+                         imu_calibration_config.REFERENCE_REPLAY_CONFIG],
+                        sort_keys=True, default=str).encode("utf-8"))
+    for name in REPLAY_MODULES:
+        with open(importlib.import_module(name).__file__, "rb") as fh:
+            h.update(fh.read().replace(b"\r\n", b"\n"))
+    return h.hexdigest()[:16]
+
+
+def _cache_path(cache_dir: str, trial: dict, version: Optional[str] = None) -> str:
+    version = fingerprint() if version is None else version
+    key = hashlib.sha1((os.path.abspath(trial["imu"]) + "|" + version).encode("utf-8")).hexdigest()[:16]
     return os.path.join(cache_dir, f"clock_{key}.pkl")
 
 
+def check_complete(res: dict) -> dict:
+    """`res` unchanged, or SystemExit if a paired, loadable trial does not
+    carry every variant (a cache written by other code, or cut short)."""
+    if res.get("paired") and "error" not in res:
+        missing = [name for name in VARIANTS if name not in res.get("variants", {})]
+        if missing:
+            raise SystemExit("A cached trial is missing variant(s) " + ", ".join(missing)
+                             + ". Use an empty --cache-dir.")
+    return res
+
+
 def _work(args):
-    trial, cache_dir = args
-    path = _cache_path(cache_dir, trial) if cache_dir else None
+    trial, cache_dir, version = args
+    path = _cache_path(cache_dir, trial, version) if cache_dir else None
     if path and os.path.exists(path):
         with open(path, "rb") as fh:
-            return pickle.load(fh)
+            return check_complete(pickle.load(fh))
     res = evaluate_trial(trial)
+    res["fingerprint"] = version
     if path:
         with open(path + ".tmp", "wb") as fh:
             pickle.dump(res, fh)
         os.replace(path + ".tmp", path)
-    return res
+    return check_complete(res)
+
+
+def outside_repo(path: Optional[str], what: str) -> Optional[str]:
+    """`path` made absolute, or SystemExit if it is inside the repository:
+    nothing this script derives from the recordings may land in the tree."""
+    if not path:
+        return None
+    path = os.path.abspath(path)
+    try:
+        inside = os.path.commonpath([path, REPO_DIR]) == REPO_DIR
+    except ValueError:                                  # different drives
+        inside = False
+    if inside:
+        raise SystemExit(f"{what} must be outside the repository.")
+    return path
 
 
 def check_cache_dir(cache_dir: Optional[str]) -> Optional[str]:
     """The absolute cache directory, refusing one inside the repository."""
-    if not cache_dir:
-        return None
-    cache_dir = os.path.abspath(cache_dir)
-    try:
-        inside = os.path.commonpath([cache_dir, REPO_DIR]) == REPO_DIR
-    except ValueError:                                  # different drives
-        inside = False
-    if inside:
-        raise SystemExit("--cache-dir must be outside the repository.")
-    os.makedirs(cache_dir, exist_ok=True)
+    cache_dir = outside_repo(cache_dir, "--cache-dir")
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
 
@@ -1004,7 +1202,8 @@ def run(cache_dir: Optional[str] = None, workers: int = 1, limit: Optional[int] 
     if not trials:
         raise SystemExit(f"No trials found under {batch.REC_ROOT!r}.")
     cache_dir = check_cache_dir(cache_dir)
-    jobs = [(t, cache_dir) for t in trials]
+    version = fingerprint()
+    jobs = [(t, cache_dir, version) for t in trials]
     results = []
     if workers > 1:
         import concurrent.futures as cf
@@ -1026,8 +1225,10 @@ def main():
                     help="per-trial cache of derived numbers; must be outside the repository")
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--out", default=None, help="write the aggregate summary here as JSON")
+    ap.add_argument("--out", default=None,
+                    help="write the aggregate summary here as JSON; must be outside the repository")
     args = ap.parse_args()
+    args.out = outside_repo(args.out, "--out")           # before any replay is run
     summary = summarise(run(args.cache_dir, args.workers, args.limit))
     text = json.dumps(summary, indent=1, default=float)
     if args.out:

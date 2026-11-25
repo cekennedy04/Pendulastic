@@ -22,16 +22,31 @@ CLOCK_OFFSET_S = 1.25        # desktop clock ahead of the phone's
 TRANSIT_S = 0.004            # fastest packet
 
 
-def _bursty_swing(burst=9, n=800, drift_ppm=0.0, mag=True):
+SWING_A, SWING_HZ, SWING_DECAY = 1.0, 1.0, 0.45     # the damped swing: rad, Hz, 1/s
+
+
+def _damped_angle(tp):
+    """The damped swing's angle (rad) at phone time tp: a 2 s hold, then a
+    drop to SWING_A that rings down, like a released leg."""
+    s = np.maximum(np.asarray(tp, dtype=float) - 2.0, 0.0)
+    return SWING_A * (1.0 - np.exp(-SWING_DECAY * s) * np.cos(2 * math.pi * SWING_HZ * s))
+
+
+def _bursty_swing(burst=9, n=800, drift_ppm=0.0, mag=True, damped=False):
     """A solo phone held still for 2 s then swung about x, 100 Hz on its own
     clock, received by the desktop `burst` samples at a time (gyro first, then
-    accel, then mag inside a burst, as the server logs them)."""
+    accel, then mag inside a burst, as the server logs them). `damped` makes
+    the swing ring down (_damped_angle) instead of running on."""
     samples = []
     angle = 0.0
     per_sensor = {"gyro": [], "accel": [], "mag": []}
+    w = 2 * math.pi * SWING_HZ
     for i in range(n):
         tp = i * 0.01
         rate = 0.0 if tp < 2.0 else 3.0 * math.sin(2 * math.pi * 1.0 * (tp - 2.0))
+        if damped and tp >= 2.0:
+            s = tp - 2.0
+            rate = SWING_A * math.exp(-SWING_DECAY * s) * (SWING_DECAY * math.cos(w * s) + w * math.sin(w * s))
         angle += rate * 0.01
         ts = PHONE_EPOCH_MS + int(round(tp * 1000))
         # The burst leaves the phone when its last sample is taken.
@@ -403,3 +418,226 @@ def test_the_cache_may_not_live_inside_the_repository(tmp_path):
 def test_cache_names_carry_no_path_component(tmp_path):
     name = os.path.basename(crc._cache_path(str(tmp_path), {"imu": "/some/where/Trial_3_imu.csv"}))
     assert name.startswith("clock_") and "Trial" not in name and "where" not in name
+
+
+def test_out_may_not_be_written_inside_the_repository(tmp_path):
+    with pytest.raises(SystemExit):
+        crc.outside_repo(os.path.join(crc.REPO_DIR, "docs", "reports", "summary.json"), "--out")
+    assert crc.outside_repo(None, "--out") is None
+    assert crc.outside_repo(str(tmp_path / "s.json"), "--out") == os.path.abspath(str(tmp_path / "s.json"))
+
+
+def test_cache_name_changes_with_the_code_and_config_version(tmp_path):
+    trial = {"imu": "/some/where/Trial_3_imu.csv"}
+    now = crc._cache_path(str(tmp_path), trial)
+    assert now == crc._cache_path(str(tmp_path), trial, crc.fingerprint())
+    assert now != crc._cache_path(str(tmp_path), trial, "another-version")
+    before = crc.fingerprint()
+    saved = cfg.REFERENCE_REPLAY_CONFIG
+    try:
+        cfg.REFERENCE_REPLAY_CONFIG = dict(saved, ema_alpha=0.3)
+        assert crc.fingerprint() != before
+    finally:
+        cfg.REFERENCE_REPLAY_CONFIG = saved
+    assert crc.fingerprint() == before
+
+
+def test_a_cached_trial_missing_a_variant_is_refused(tmp_path):
+    import pickle
+    trial = {"imu": str(tmp_path / "Trial_1_imu.csv")}
+    full = {"paired": True, "variants": {name: {} for name in crc.VARIANTS}}
+    assert crc.check_complete(full) is full
+    assert crc.check_complete({"paired": False, "variants": {}})["paired"] is False
+    assert crc.check_complete({"paired": True, "variants": {}, "error": "ValueError"})
+    short = {"paired": True, "variants": {"receive/recording": {}}}
+    with open(crc._cache_path(str(tmp_path), trial, "v"), "wb") as fh:
+        pickle.dump(short, fh)
+    with pytest.raises(SystemExit, match="missing variant"):
+        crc._work((trial, str(tmp_path), "v"))
+
+
+# ── the grid-shift control ────────────────────────────────────────────────────
+
+def test_grid_shift_moves_the_ticks_and_nothing_else():
+    samples = _bursty_swing(burst=9)
+    for clock, base_clock in crc.SHIFTED.items():
+        base = crc.restamp(samples, base_clock)
+        fed = crc.restamp(samples, clock)
+        assert len(fed) == len(base) + 1 and fed[1:] == list(base)
+        assert fed[0]["sensor"] == "mag"
+        assert fed[0]["t"] == pytest.approx(base[0]["t"] - crc.GRID_SHIFT_S)
+    # On the phone clock every tick still holds one new gyro sample, so the
+    # shifted replay is the same orientations, the same swing.
+    _t, flex, cap = _replayed(crc.restamp(samples, "phone"))
+    _t, flex_s, cap_s = _replayed(crc.restamp(samples, "phone+5ms"))
+    assert crc.staircase(cap_s["quats"], flex_s)["repeat_share"] < 0.02
+    assert np.nanmax(flex_s) == pytest.approx(np.nanmax(flex), abs=1e-6)
+    assert crc.restamp([s for s in samples if s["sensor"] != "mag"], "receive+5ms") is None
+
+
+def test_grid_shift_control_compares_each_clock_with_its_shifted_twin():
+    def trial(n_shifted):
+        return {"paired": True, "variants": {
+            "receive/recording": _row(0.50, 5), "receive+5ms/recording": _row(0.50, n_shifted),
+            "phone/recording": _row(0.40, 5), "phone+5ms/recording": _row(0.47, 5)}}
+    res = crc.grid_shift_control([trial(5), trial(6), trial(4)])
+    assert res["receive"]["stored"]["N_changed"] == 2 and res["receive"]["stored"]["n_N_both"] == 3
+    assert res["receive"]["stored"]["pt_moved_over_0.05"] == 0
+    assert res["phone"]["stored"]["N_changed"] == 0
+    assert res["phone"]["stored"]["pt_moved_over_0.05"] == 3
+    assert crc.grid_shift_control([_trial(_row(0.5, 5), _row(0.5, 5))]) == {}
+
+
+# ── bias calibration on and off, same trials ──────────────────────────────────
+
+def _four(recv_on, phone_on, recv_off, phone_off):
+    return {"paired": True, "variants": {
+        "receive/recording": recv_on, "phone/recording": phone_on,
+        f"receive/{crc.NO_BIAS}": recv_off, f"phone/{crc.NO_BIAS}": phone_off}}
+
+
+def _held(row, sensor, app):
+    return dict(row, track_fit_rmse=sensor, track_shank_rmse=app, track_shank_gain=0.9)
+
+
+def test_levels_are_over_the_trials_every_variant_has():
+    four = tuple(f"{c}/{f}" for f in ("recording", crc.NO_BIAS) for c in crc.CLOCKS)
+    trials = [_four(_held(_row(0.5, 5), 4.0, 5.0), _held(_row(0.5, 5), 3.0, 5.5),
+                    _held(_row(0.5, 5), 3.5, 4.5), _held(_row(0.5, 5), 2.5, 4.4)),
+              _four(_held(_row(0.2, 4, opt_pt=0.2), 6.0, 7.0), _held(_row(0.2, 4, opt_pt=0.2), 5.0, 7.5),
+                    _held(_row(0.2, 4, opt_pt=0.2), 5.5, 6.5), _held(_row(0.2, 4, opt_pt=0.2), 4.5, 6.4)),
+              # held on three variants only: left out of every held figure
+              _four(_held(_row(0.9, 5, opt_pt=0.8), 40.0, 50.0), _held(_row(0.9, 5, opt_pt=0.8), 30.0, 50.0),
+                    _held(_row(0.9, 5, opt_pt=0.8), 35.0, 45.0), _row(0.9, 5, opt_pt=0.8)),
+              _trial(_row(0.5, 5), _row(0.5, 5))]          # no bias-off variants at all
+    res = crc.levels_same_trials(trials, four)
+    assert (res["n_trials"], res["n_held"], res["n_aligned"]) == (3, 2, 3)
+    assert res["variants"]["receive/recording"]["sensor_rmse_median"] == pytest.approx(5.0)
+    assert res["variants"]["phone/recording"]["sensor_rmse_median"] == pytest.approx(4.0)
+    assert res["variants"][f"receive/{crc.NO_BIAS}"]["sensor_rmse_median"] == pytest.approx(4.5)
+    assert res["variants"][f"phone/{crc.NO_BIAS}"]["app_rmse_median"] == pytest.approx(5.4)
+    assert res["agreement"]["gap_filled"]["n"] == 3
+    assert res["agreement"]["gap_filled"]["phone/recording"]["zone_agree"] == 3
+
+
+def test_mover_overlap_says_whether_the_bias_off_movers_are_a_subset():
+    trials = [
+        _four(_row(0.50, 5), _row(0.62, 6), _row(0.50, 5), _row(0.61, 6)),   # moves either way
+        _four(_row(0.50, 5), _row(0.70, 5), _row(0.50, 5), _row(0.50, 5)),   # only with bias on
+        _four(_row(0.50, 5), _row(0.50, 5), _row(0.50, 5), _row(0.58, 4)),   # only with it off
+        _four(_row(0.50, 5), _row(0.50, 5), _row(0.50, 5), _row(0.50, 5)),
+        _trial(_row(0.5, 5), _row(0.9, 6)),                                  # no bias-off variants
+    ]
+    s = crc.mover_overlap(trials)["stored"]
+    assert s["n_pt"] == 4
+    assert s["pt_moved_over_0.05"] == {"with": 2, "without": 2, "both": 1,
+                                       "with_only": 1, "without_only": 1}
+    assert s["pt_moved_over_0.1"] == {"with": 2, "without": 1, "both": 1,
+                                      "with_only": 1, "without_only": 0}
+    assert s["N_changed"] == {"with": 1, "without": 2, "both": 1, "with_only": 0, "without_only": 1}
+
+
+# ── end to end, on synthetic trials ───────────────────────────────────────────
+
+SENSOR_NAMES = {"accel": "Accelerometer", "gyro": "Gyroscope", "mag": "Magnetometer"}
+
+
+def _write_trial(folder, samples, pid="pidsynthetic"):
+    """The four component files of one trial, as the server writes them."""
+    import csv
+    import workbench_engine as engine
+    os.makedirs(folder, exist_ok=True)
+    trial = {"participant": pid, "trial_key": f"{pid}_left_pre_T1", "optitrack_path": "synthetic"}
+    for kind, name in SENSOR_NAMES.items():
+        trial[kind] = os.path.join(folder, f"Trial_1_{kind}.csv")
+        with open(trial[kind], "w", encoding="utf-8", newline="") as fh:
+            out = csv.writer(fh)
+            out.writerow(engine._COMPONENT_HEADERS[kind])
+            for s in samples:
+                if s["sensor"] == kind:
+                    out.writerow([repr(s["t"] * 1000.0), s["phone_ts_ms"], s["role"], name, *s["v"]])
+    trial["imu"] = os.path.join(folder, "Trial_1_imu.csv")
+    with open(trial["imu"], "w", encoding="utf-8", newline="") as fh:
+        out = csv.writer(fh)
+        header = engine._COMPONENT_HEADERS["imu"]
+        out.writerow(header)
+        for k in range(40):                     # 20 Hz: the loader wants a real rate
+            out.writerow([repr(samples[0]["t"] + 0.05 * k)] + [0] * (len(header) - 1))
+    return trial
+
+
+def _optics(start_s=1.0, fps=120.0, span_s=9.5):
+    """What the markers would have seen of the damped swing: flexion-positive
+    degrees on a take that began start_s into the phone's recording."""
+    t = np.arange(0.0, span_s, 1.0 / fps)
+    flex = np.degrees(_damped_angle(t + start_s))
+    return {"t": t, "fps": fps, "shank_flex": flex, "shank_total": np.abs(flex),
+            "refit": flex.copy(), "thigh": np.zeros_like(t), "coverage": 1.0,
+            "coverage_both": 1.0, "plate_agreement_r": 1.0, "flags": [], "axis_share": 1.0,
+            "refit_jumps": 0}
+
+
+@pytest.fixture(scope="module")
+def end_to_end(tmp_path_factory):
+    """Three synthetic paired trials through evaluate_trial and summarise:
+    two bursty ones, and one with an unstamped gyro sample."""
+    root = tmp_path_factory.mktemp("trials")
+    unstamped = _bursty_swing(burst=9, n=1200, damped=True)
+    k = next(i for i, s in enumerate(unstamped) if s["sensor"] == "gyro" and i > 50)
+    unstamped[k] = dict(unstamped[k], phone_ts_ms=0)
+    recordings = [_bursty_swing(burst=9, n=1200, damped=True),
+                  _bursty_swing(burst=5, n=1200, damped=True), unstamped]
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(v, "optical_curves", lambda path: _optics())
+        mp.setitem(v._GROUP_CACHE, "pidsynthetic", "ungrouped")
+        trials = [crc.evaluate_trial(_write_trial(str(root / str(i)), samples))
+                  for i, samples in enumerate(recordings)]
+    finally:
+        mp.undo()
+    return trials, crc.summarise(trials)
+
+
+def test_end_to_end_every_variant_is_replayed_aligned_and_scored(end_to_end):
+    trials, _summary = end_to_end
+    for trial in trials[:2]:
+        assert "error" not in trial and crc.check_complete(trial) is trial
+        for name in crc.VARIANTS:
+            row = trial["variants"][name]
+            assert row["replay_reason"] == "ok", name
+            assert row["track_fit_status"] == "ok" and row["imu_scored"], name
+        recv, phone = trial["variants"]["receive/recording"], trial["variants"]["phone/recording"]
+        assert recv["stair_sensor"]["repeat_share"] > 0.7
+        assert phone["stair_sensor"]["repeat_share"] < 0.05
+        # The sensor follows the "plate" more closely without the staircase.
+        assert phone["track_fit_sd"] < recv["track_fit_sd"]
+        assert phone["track_fit_sd"] < 1.5
+        assert recv["zero"]["zero_phone_ms"] == phone["zero"]["zero_phone_ms"]
+
+
+def test_end_to_end_a_missing_phone_stamp_is_its_own_reason(end_to_end):
+    trials, summary = end_to_end
+    row = trials[2]["variants"]["phone/recording"]
+    assert row["replay_reason"] == "no phone timestamp" and row["imu_status"] == "error"
+    assert trials[2]["variants"]["receive/recording"]["replay_reason"] == "ok"
+    assert summary["replay_reasons"]["phone/recording"] == {"ok": 2, "no phone timestamp": 1}
+    assert summary["replay_reasons"]["phone+5ms/recording"] == {"ok": 2, "no phone timestamp": 1}
+    assert summary["replay_reasons"]["receive/recording"] == {"ok": 3}
+    assert summary["inventory"]["trials_with_usable_phone_clock"] == 2
+
+
+def test_end_to_end_summary_has_every_table_and_no_participant_id(end_to_end):
+    import json
+    _trials, summary = end_to_end
+    assert summary["n_paired"] == 3 and summary["n_paired_replayed"] == 3
+    assert set(summary["variants"]) == set(crc.VARIANTS)
+    change = summary["clock_change"]["recording"]
+    assert change["zeroed"] == {"both": 2, "receive_only": 1, "phone_only": 0, "neither": 0}
+    assert change["sensor_residual"]["n"] == 2 and change["sensor_residual"]["change_median"] < 0
+    assert summary["bias_levels"]["n_trials"] == 3 and summary["bias_levels"]["n_held"] == 2
+    levels = summary["bias_levels"]["variants"]
+    assert levels["phone/recording"]["sensor_rmse_median"] < levels["receive/recording"]["sensor_rmse_median"]
+    assert summary["mover_overlap"]["stored"]["n_pt"] == 2
+    assert set(summary["grid_shift_control"]) == {"receive", "phone"}
+    assert summary["grid_shift_control"]["receive"]["stored"]["n_N_both"] == 3
+    assert "pidsynthetic" not in json.dumps(summary, default=float)

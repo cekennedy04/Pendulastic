@@ -1,9 +1,9 @@
 # Which clock should corpus phone recordings be replayed on?
 
-Date: 2026-11-25. Analysis only: no replay, scorer, Rust core, web app or
-`STATUS.md` change. Script: `corpus_replay_clock.py` (tests:
-`tests/test_corpus_replay_clock.py`). Aggregates only; no participant
-identifiers and no per-trial tables.
+Date: 2026-11-25 (revised after independent review of PR #137). Analysis only:
+no replay, scorer, Rust core, web app or `STATUS.md` change. Script:
+`corpus_replay_clock.py` (tests: `tests/test_corpus_replay_clock.py`).
+Aggregates only; no participant identifiers and no per-trial tables.
 
 ## Summary
 
@@ -12,32 +12,41 @@ recordings are replayed on the desktop's receive clock, the samples arrive in
 bursts, and about 79% of in-swing 10 ms ticks repeat the previous tick. The
 phone's own timestamps are present and clean on every loadable trial.
 
-**How much it matters depends on which number you look at:**
+**What moves on the phone clock.** Every row compares the same trials on both
+clocks (reference footing, whole-recording axis):
 
-| Quantity (reference footing, whole-recording axis) | Receive clock | Phone clock | Moves? |
-|---|---|---|---|
-| In-swing ticks that repeat the previous tick (median) | 0.79 | 0.006 | yes |
-| Sensor-angle roughness about its own 6 Hz curve (median) | 3.17 deg | 0.16 deg | yes |
-| Sensor vs plate, offset removed (median / p90) | 2.58 / 4.08 deg | 1.37 / 2.72 deg | yes, better |
-| Sensor RMSE, hold-zeroed (the 2026-11-18 "3.9 deg") | 3.86 deg (132 trials) | 2.71 deg (131 trials) | yes, better |
-| App angle vs plate, gain (the "0.93") | 0.931 | 0.932 | no |
-| App angle vs plate, RMSE (the "4.8 deg") | 4.79 deg | 5.35 deg | no systematic move (see below) |
-| Axis error (median / p90) | 10.9 / 20.2 deg | 10.7 / 20.5 deg | no |
-| Stored PT score moved by more than 0.05 / 0.1 / 0.3 | - | 7 / 5 / 1 of 144 | few |
-| Verdict changed | - | 1 of 136 | almost none |
-| N (swing count) changed | - | 28 of 144 | yes |
-| Verdict agreement with gap-filled optics | 126 of 133 | 127 of 134 | no |
-| N equal to gap-filled optics | 75 of 141 | 87 of 141 | yes, better |
+| Quantity | Trials | Receive clock | Phone clock | Moves? |
+|---|---|---|---|---|
+| In-swing ticks that repeat the previous tick (median) | zeroed | 0.79 | 0.006 | yes |
+| Sensor-angle roughness about its own 6 Hz curve (median) | zeroed | 3.17 deg | 0.16 deg | yes |
+| Sensor vs plate, offset removed (median) | 145 | 2.58 deg | 1.37 deg | yes, better |
+| Sensor RMSE, hold-zeroed (the 2026-11-18 "3.9 deg") | 131 | 3.84 deg | 2.71 deg | yes, better |
+| App angle vs plate, gain (the "0.93") | 131 | 0.931 | 0.935 | no |
+| App angle vs plate, RMSE (the "4.8 deg") | 131 | 4.84 deg | 5.35 deg | no systematic move |
+| Verdict agreement with gap-filled optics | 133 | 126 | 126 | no |
+| N equal to gap-filled optics | 133 | 70 | 83 | yes, better |
+| PT ICC against gap-filled optics | 133 | 0.896 | 0.879 | no |
 
-So the receive clock made the **sensor-level tracking figures look worse than
-the sensor is**, and it perturbs N on about a fifth of trials. It does **not**
-change the app-angle gain, the verdicts, or the agreement of the PT score with
-optics, and PR #130's conclusion (whole-recording axis beats the old
-25-sample axis) holds on both clocks.
+Receive to phone, 144 trials scored on both: the stored PT score moves by more
+than 0.05 / 0.1 / 0.3 on 7 / 5 / 1 trials, one verdict of 136 changes, and N
+changes on 28. The noise floor for N, from moving only the tick grid by 5 ms,
+is 6 to 8 trials (section 6).
 
-**Recommendation:** the phone clock is the right time base for corpus scoring.
-Adopt it as its own versioned loader change under the Quality bar, not as a
-side effect of another PR. Details in "Recommendation".
+**Two things change with the clock, not one:**
+
+1. where samples fall on the tick grid (the staircase), and
+2. when the pre-release bias calibration fires (many times on the receive
+   clock, once on the phone clock).
+
+The sensor improvement is the first: it is the same size with the bias
+calibration on or off (section 6). The corpus does not show the second to be
+an improvement: with the calibration switched off, results are no worse on
+either clock.
+
+**Recommendation:** replay the corpus on the phone clock, for the tick
+placement. Do not adopt it on the argument that the bias calibration then
+"runs as the app runs it" until that calibration has been judged on its own.
+Details in "Recommendation".
 
 ## 1. Which timestamp each path uses
 
@@ -66,7 +75,9 @@ on either clock. On all 175:
 - accel and gyro are stamped separately: the nearest-stamp gap is typically
   1 ms, worst per trial typically 5 ms.
 
-All trials are single-phone (proximal role only).
+All trials are single-phone (proximal role only). No replay failed for want of
+a phone stamp; the script records that as its own reason, separate from a
+trial that never zeroes.
 
 ## 2. Burst structure
 
@@ -109,23 +120,41 @@ Measured between the two phone-side clocks:
   is the removed network latency.
 - The alignment landed somewhere else (more than 0.25 s away) on 2 of 145
   trials. One has optical coverage of only a quarter of the swing and is
-  ambiguous on both clocks; the other fits a period away on the phone clock
-  (see section 5 for why).
+  ambiguous on both clocks; the other fits a period away on the phone clock.
+
+**Without those two trials** (143 aligned) nothing in the summary changes
+character:
+
+| Same alignment on both clocks | Trials | Receive | Phone |
+|---|---|---|---|
+| Sensor vs plate, offset removed | 143 | 2.59 deg | 1.37 deg |
+| Sensor RMSE, hold-zeroed | 131 | 3.84 deg | 2.71 deg |
+| App gain (median / p10) | 143 | 0.931 / 0.843 | 0.934 / 0.833 |
+| App RMSE | 131 | 4.84 deg | 5.35 deg |
+| Stored PT moved over 0.05 / 0.1 / 0.3 | 142 | - | 7 / 5 / 1 |
+| N changed | 142 | - | 28 |
+| Verdict agreement with gap-filled optics | 131 | 125 | 125 |
+| N equal to gap-filled optics | 131 | 69 | 82 |
+| PT ICC against gap-filled optics | 131 | 0.951 | 0.924 |
+
+The largest score disagreement with optics, on both clocks, is one of the two,
+which is why the ICC level is higher without them. The step between clocks is
+the same.
 
 The phone clock used here is `phone_ts/1000 + min(receive - phone)` per trial.
 
 ## 4. Paired validation on both clocks
 
-155 paired trials replay; 146 zero on both clocks, 144 are scored on both,
-137 are interpretable on each. The receive-clock rows reproduce PR #130's
-published "after" figures exactly, and receive/opening-fit reproduces its
-"before" figures.
+155 paired trials replay; 146 zero on both clocks (9 never zero on either),
+144 are scored on both, 137 are interpretable on each. The receive-clock rows
+reproduce PR #130's published "after" figures exactly, and receive/opening-fit
+reproduces its "before" figures.
 
 ### The 2026-11-18 figures
 
-| | Published | Receive (this run) | Phone | Same trials, receive -> phone |
+| | Published | Receive, all held | Phone, all held | Same 131 trials |
 |---|---|---|---|---|
-| Sensor RMSE, hold-zeroed | 3.9 deg | 3.86 (132) | 2.71 (131) | 3.84 -> 2.71 |
+| Sensor RMSE, hold-zeroed | 3.9 deg | 3.86 (132 trials) | 2.71 (131 trials) | 3.84 -> 2.71 |
 | App RMSE | 4.8 deg | 4.79 | 5.35 | 4.84 -> 5.35 |
 | App gain | 0.93 | 0.931 | 0.932 | 0.931 -> 0.935 |
 
@@ -136,8 +165,7 @@ published "after" figures exactly, and receive/opening-fit reproduces its
   systematic per-trial shift: the median per-trial change is -0.01 deg
   (p10-p90 -1.7 to +1.8), lower by more than 0.5 on 32 trials and higher on 41,
   p90 9.9 to 9.7. With the offset removed the app angle is slightly better
-  (2.09 to 1.79 deg). The median moves because trials reshuffle, and the
-  reshuffling comes from the bias timing in section 5, not from the staircase.
+  (2.09 to 1.79 deg).
 
 ### Score, N and verdict
 
@@ -162,12 +190,17 @@ lost, one gained.
 | PT, movers over 0.1 | 3 | 3 |
 | N | 24 | 8 |
 
-| Agreement with gap-filled optics | Receive | Phone |
+| Agreement with gap-filled optics, same 133 trials | Receive | Phone |
 |---|---|---|
-| Verdict | 126 of 133 (kappa 0.895) | 127 of 134 (kappa 0.897) |
-| N equal | 75 of 141 | 87 of 141 |
-| PT ICC, same trials | 0.896 | 0.879 |
+| Verdict | 126 (kappa 0.895) | 126 (kappa 0.895) |
+| N equal | 70 | 83 |
+| PT ICC | 0.896 | 0.879 |
+| PT ICC without the largest disagreement | 0.951 | 0.924 |
 | Median absolute PT difference | 0.018 | 0.017 |
+
+(Over each clock's own interpretable trials the same figures read 126 of 133
+and 127 of 134 for the verdict, and 75 and 87 of 141 for N. Those are
+different trial sets and are not quoted above.)
 
 The score moves are not directional. N moves toward optics. The PT ICC does
 not improve; it is carried by one or two large disagreements on either clock.
@@ -193,51 +226,124 @@ The comparison holds, with the same size, on the phone clock.
 - **Zero**: 146 trials zero on both clocks, 9 on neither, none on only one. The
   zero is taken at the same gyro sample on all 146. The zero pose differs by a
   median 0.4 deg (p90 1.1, largest 2.8).
-- **Stillness** behaves differently, and this is the second way the clock
-  reaches the result. The stillness window needs a 0.95 s span of a 1.0 s
-  window (`pendulastic_imu_server.py:417`; the Rust core has the same rule,
-  `stillness.rs:60-64`). On the receive clock the bursts make that test flicker,
-  so the rising-edge gyro-bias calibration re-fires: a median 5 times per
-  trial, up to 48, and never on 11 trials. On the phone clock it fires exactly
-  once on 142 of 146 trials, at the first still window, which is what the Rust
-  core does (`replay.rs:401-413`).
-- Consequence: on the receive clock the bias in use was estimated a median
-  0.16 s before the zero; on the phone clock 1.6 s before (up to 8 s).
+- **Stillness** behaves differently. The stillness window needs a 0.95 s span
+  of a 1.0 s window (`pendulastic_imu_server.py:417`; the Rust core has the
+  same rule, `stillness.rs:60-64`). On the receive clock the bursts make that
+  test flicker, so the rising edge that triggers the bias calibration occurs a
+  median 5 times per trial, up to 48, and never on 11 trials. On the phone
+  clock it occurs exactly once on 142 of 146 trials, at the first still
+  window, which is what the Rust core does (`replay.rs:401-413`).
+- These are counts of **stillness rising edges, not of applied estimates**. On
+  each edge the replay re-estimates the bias but applies a gyro axis only if it
+  passes its own significance test and size bound; that was not observed here.
+- On the receive clock the last such edge was a median 0.16 s before the zero;
+  on the phone clock 1.6 s before (up to 8 s).
+- The mean gyro rate over the window the bias is taken from is about
+  0.02 rad/s (p90 0.05 to 0.06) on either clock. For a held leg that is mostly
+  leg motion rather than sensor bias.
 
-**Splitting the two effects.** With bias calibration switched off on both
-clocks (analysis only), only tick placement and accel/gyro pairing differ:
+The detector and the zero are valid on the phone clock. Whether the bias
+calibration is worth having, on either clock, is the next section.
 
-| Receive -> phone | Bias calibration on | Off |
+## 6. Staircase or bias calibration? And the noise floor
+
+**The bias-off variant.** The reference replay with the stillness check
+answering "not still" throughout. That disables the gyro-bias calibration
+**and the accelerometer-bias calibration** (the replay estimates both on the
+same edge), so it removes both, not the gyro's alone. Analysis only.
+
+### Levels, same trials on all four
+
+| | Receive, bias on | Receive, bias off | Phone, bias on | Phone, bias off |
+|---|---|---|---|---|
+| Sensor RMSE, hold-zeroed (131 trials), median | 3.84 | 3.48 | 2.71 | 2.39 |
+| the same, p90 | 6.77 | 7.28 | 6.83 | 6.85 |
+| Sensor vs plate, offset removed (145), median | 2.58 | 2.35 | 1.37 | 1.21 |
+| App RMSE (131), median | 4.84 | 5.04 | 5.35 | 5.18 |
+| the same, p90 | 9.92 | 9.20 | 9.68 | 9.32 |
+| App gain (131), median | 0.931 | 0.927 | 0.935 | 0.933 |
+| PT ICC against gap-filled optics (133) | 0.896 | 0.893 | 0.879 | 0.880 |
+| Verdict agreement with gap-filled optics (133) | 126 | 125 | 126 | 126 |
+| N equal to gap-filled optics (133) | 70 | 78 | 83 | 83 |
+
+What this shows:
+
+- **The clock step is the staircase.** Sensor RMSE falls by 1.13 deg with the
+  calibration on and by 1.09 deg with it off. Almost none of 3.84 -> 2.71 is
+  the bias calibration re-firing.
+- **The calibration itself does not help, on either clock.** Switching it off
+  lowers the median sensor RMSE by 0.3 to 0.4 deg on both clocks. App RMSE is
+  mixed (0.2 worse on the receive clock, 0.2 better on the phone clock). ICC
+  and verdict agreement do not move. This agrees with the reviewer's 24-trial
+  sample.
+- So the phone clock's single firing is **not shown to be better** than the
+  receive clock's re-firing; neither is shown to be better than no calibration.
+
+### Are the bias-off movers a subset of the bias-on movers?
+
+No. Receive to phone, 144 trials scored on all four:
+
+| | Bias on | Bias off | Both | Bias on only | Bias off only |
+|---|---|---|---|---|---|
+| Stored PT moved over 0.05 | 7 | 4 | 3 | 4 | 1 |
+| over 0.1 | 5 | 3 | 2 | 3 | 1 |
+| over 0.3 | 1 | 1 | 0 | 1 | 1 |
+| N changed | 28 | 15 | 8 | 20 | 7 |
+| Verdict changed (136) | 1 | 0 | 0 | 1 | 0 |
+
+Fewer trials move with the calibration off, but they are largely different
+trials (8 of the 15 N changes are shared). The counts therefore do **not**
+divide into a staircase share and a bias share, and the earlier wording
+("about half") is withdrawn. What the counts support: the clock moves N on 28
+trials with the calibration on and on 15 with it off, and the app-angle RMSE
+change per trial spans -1.7 to +1.8 deg (p10-p90) with it on against -0.3 to
++0.2 with it off.
+
+### Noise floor: the tick grid moved by 5 ms, samples untouched
+
+| Same clock, grid origin shifted 5 ms (144 scored) | Receive | Phone |
 |---|---|---|
-| Sensor residual better / worse by over 0.5 deg | 104 / 4 | 115 / 0 |
-| Stored PT moved over 0.05 / 0.1 / 0.3 | 7 / 5 / 1 | 4 / 3 / 1 |
-| Verdict changed | 1 | 0 |
-| N changed | 28 | 15 |
-| App RMSE change per trial, p10-p90 | -1.7 to +1.8 deg | -0.3 to +0.2 deg |
-| Alignments that moved | 2 | 1 |
+| N changed | 8 | 6 |
+| Stored PT moved over 0.05 | 0 (largest 0.021) | 0 (largest 0.017) |
+| Verdict changed | 0 | 0 |
+| Sensor residual changed by over 0.5 deg | 0 | 0 |
+| App RMSE change, p10-p90 | -0.05 to +0.06 deg | -0.04 to +0.06 deg |
 
-The staircase accounts for the sensor-residual improvement and about half the
-score and N movement. The bias-calibration timing accounts for the rest and
-for nearly all of the several-degree per-trial changes in the app angle.
+N changes on 6 to 8 of 144 trials from where the grid happens to fall. So
+"N changed on 28" is roughly 20 above the floor, and the bias-off "15" roughly
+double the floor. The PT score moves over 0.05 have no floor under them: none
+arises from the grid alone.
 
-The logic is valid on the phone clock: it does what the shipped core does.
-One thing to look at separately, on either clock: the mean gyro rate over the
-window the bias is taken from is about 0.02 rad/s (p90 0.05 to 0.06), which
-for a held leg is mostly leg motion rather than sensor bias.
+## 7. Recommendation
 
-## 6. Recommendation
+**Replay the corpus on the phone clock, as a tick-placement fix.** That part
+is supported on its own:
 
-**Use the phone clock for corpus scoring.**
-
-- It is the clock the app uses, so the corpus then tests the path that ships.
-- The stamps are complete and clean on every loadable trial.
-- The stillness and bias logic then runs as the Rust core runs it.
-- The zero is unaffected, alignment is unaffected, verdicts barely move.
-- It removes an artefact that currently inflates sensor error by about a
-  degree and hides what the smoothing filter is actually doing.
+- it is the clock the app uses, and the stamps are complete and clean;
+- it removes about 1.1 deg of sensor error that is an artefact of the replay,
+  with the bias calibration on or off;
+- N agrees with optics on more trials (70 -> 83 of 133);
+- the zero, the alignment, the gain and the verdicts do not move.
 
 It is not a fix for anything clinical: app gain, app RMSE and score agreement
 with optics do not get better.
+
+**Condition.** The phone clock also changes when the bias calibration fires,
+and the two cannot be adopted separately: on the phone clock the stillness
+test stops flickering whether one wants that or not. The corpus gives no
+evidence that the resulting single early estimate is better than re-firing,
+and none that either beats no calibration. So:
+
+- adopt the phone clock for the tick placement, and say in the adoption that
+  the bias-calibration timing changes with it as a side effect, not as a
+  benefit;
+- before or with that adoption, decide the bias calibration on its own
+  evidence (keep, gate harder, or remove), on the phone clock, with the gyro
+  and accelerometer parts separated. That decision touches the shipped core,
+  which has the same rule, so it is not a corpus-only question.
+
+If that decision is not made first, the score and N changes on adoption should
+be reported as "clock plus bias timing", not attributed to the clock alone.
 
 **What adopting it would need** (not done here):
 
@@ -263,29 +369,35 @@ recomputed here). `HEALTHY_REF` is derived from OptiTrack curves
 
 ## Second derivation
 
-A separate script re-derived an evenly spaced sample of the paired trials
-(17 trials, 32 scored replays; one trial never zeroes on either clock)
-by a different route: a different loader, a different phone-clock origin,
-`replay_trial` and the scorer called directly, an own-code residual on the
-optical frames, and repeated ticks counted from arrival times alone.
-
-- PT within 0.0007 on all 32; N and verdict identical on all 32.
-- Repeated-tick share within 0.03.
-- Sensor residual, sample medians: 2.86 against 2.88 deg (receive) and
-  1.14 against 1.31 deg (phone). Per trial the two residual definitions differ
-  by up to 1.2 deg; the direction and size of the clock effect agree.
-
-The receive-clock results also reproduce PR #130's published tables exactly,
-and the claim's own figures (79%, 3.2 deg, 2.6 to 1.4 deg, 5 trials over 0.1)
-were reproduced independently of PR #136's script. The one difference: N
-changes on 28 trials here against 27 there.
+- A separate script re-derived an evenly spaced sample of the paired trials
+  (17 trials, 32 scored replays; one trial never zeroes on either clock) by a
+  different route: a different loader, a different phone-clock origin,
+  `replay_trial` and the scorer called directly, an own-code residual on the
+  optical frames, and repeated ticks counted from arrival times alone.
+  - PT within 0.0007 on all 32; N and verdict identical on all 32.
+  - Repeated-tick share within 0.03.
+  - Sensor residual, sample medians: 2.86 against 2.88 deg (receive) and
+    1.14 against 1.31 deg (phone). Per trial the two residual definitions
+    differ by up to 1.2 deg; the direction and size of the clock effect agree.
+- For this revision the whole corpus was replayed again from an empty cache.
+  Every aggregate of the first run came back identical.
+- The receive-clock results reproduce PR #130's published tables exactly, and
+  the claim's own figures (79%, 3.2 deg, 2.6 to 1.4 deg, 5 trials over 0.1)
+  were reproduced independently of PR #136's script. The one difference: N
+  changes on 28 trials here against 27 there.
 
 ## Not verified
 
 - The Rust core and wasm build were not run on restamped trials.
 - Test-retest reliability was not recomputed on the phone clock.
 - Each score mover is classed (low N), not explained trial by trial.
+- The bias-off variant removes the gyro and the accelerometer calibration
+  together; neither was switched off alone.
+- Whether a bias estimate was actually applied on a given stillness edge was
+  not observed; only the edges are counted.
 - Accel/gyro pairing order is not separated from tick placement.
+- The noise floor is one shift (5 ms) per clock, not a distribution over
+  shifts.
 - The cause of the two burst regimes (phone app batching or network) is unknown.
 - Whether `phone_ts_ms` is sensor time or app send time is inferred from its
   regular 10 ms spacing, not confirmed from the phone app.
@@ -294,7 +406,8 @@ changes on 28 trials here against 27 there.
   examined; none is paired with optics.
 - The 20 unpaired trials are inventoried only.
 - No confidence intervals. 13 participants plus one test folder; trials within
-  a participant are not independent.
+  a participant are not independent. Differences of a few tenths of a degree
+  between medians, and of a few trials between counts, are not established.
 - Drift is resolved only to a few hundred ppm per trial.
 - The `sync_offset_s` header in the merged IMU files was not compared with the
   offset used here.
@@ -304,10 +417,13 @@ changes on 28 trials here against 27 there.
 ## Regenerate
 
 ```
-python corpus_replay_clock.py --cache-dir <a folder outside the repo> --out <summary.json>
+python corpus_replay_clock.py --cache-dir <a folder outside the repo> --out <a file outside the repo>
 python -m pytest tests/test_corpus_replay_clock.py
 ```
 
-Recordings are read in place and never copied. The cache and summary must sit
-outside the repository; the script refuses a cache inside it. The tests use a
-synthetic bursty phone and need no participant data.
+Recordings are read in place and never copied. The script refuses a cache or
+an output file inside the repository. The cache is keyed on the recording, the
+reference replay config and the source of the replay modules, and a cached
+trial missing a variant stops the run. The tests use a synthetic bursty phone
+(including three synthetic trials run end to end) and need no participant
+data.
