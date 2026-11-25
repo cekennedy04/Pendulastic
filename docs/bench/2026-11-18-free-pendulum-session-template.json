@@ -1,0 +1,31 @@
+{
+ "date": "",
+ "operator": "",
+ "session": "S1",
+ "phone": {"platform": "iphone", "model": "", "os": "", "browser": ""},
+ "app_build": "",
+ "app_algorithm": "",
+ "phone_radius_m": null,
+ "phone_radius_measured": false,
+ "phone_orientation": "",
+ "encoder": {
+  "model": "",
+  "counts_per_rev": null,
+  "daq": "",
+  "format": "labview_bin",
+  "n_channels": null,
+  "sample_rate_hz": null,
+  "position_units": "deg",
+  "zero_deg": 0.0,
+  "file_prefix": "pf"
+ },
+ "pivot_tilt_deg": null,
+ "weights": {
+  "W1": {"mass_kg": null, "radius_m": 0.38},
+  "W2": {"mass_kg": null, "radius_m": 0.38},
+  "W3": {"mass_kg": null, "radius_m": 0.38},
+  "W4": {"mass_kg": null, "radius_m": 0.38}
+ },
+ "arm": {"length_m": null, "mass_kg": null},
+ "analyser_commit": ""
+}
