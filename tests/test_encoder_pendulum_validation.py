@@ -65,8 +65,28 @@ def test_best_lag_recovers_a_planted_lag():
     t = np.arange(0, 12, 0.01)
     e = 30 * np.sin(2 * np.pi * 0.85 * t) * np.exp(-0.2 * t)
     p = 30 * np.sin(2 * np.pi * 0.85 * (t - 0.063)) * np.exp(-0.2 * (t - 0.063))   # phone 63 ms late
-    lag, rm = V.best_lag(t, p, t[50:-50], e[50:-50])
-    assert abs(lag - 0.063) < 0.001 and rm < 0.05
+    lag, rm, pegged = V.best_lag(t, p, t[50:-50], e[50:-50])
+    assert abs(lag - 0.063) < 0.001 and rm < 0.05 and not pegged
+
+
+def test_a_lag_on_the_edge_of_the_search_is_pegged_not_a_lag():
+    t = np.arange(0, 12, 0.01)
+    e = 30 * np.sin(2 * np.pi * 0.85 * t) * np.exp(-0.2 * t)
+    p = 30 * np.sin(2 * np.pi * 0.85 * (t - 0.40)) * np.exp(-0.2 * (t - 0.40))    # 400 ms: outside the 300 ms search
+    lag, _, pegged = V.best_lag(t, p, t[50:-50], e[50:-50])
+    assert pegged and abs(abs(lag) - V.LAG_SEARCH_S) < 1e-9
+
+
+def test_the_footings_ema_is_read_as_the_discrete_filter_it_is():
+    """At 0.82 Hz on the 10 ms grid: about 64 ms (the continuous formula says 69) and a 6% loss;
+    checked against the filter itself run on a sinusoid."""
+    gain, lag = V.ema_response(0.82)
+    assert 0.062 < lag < 0.066 and 0.93 < gain < 0.95
+    t = np.arange(0, 40, V.GRID_S)
+    y = V.ema_like_app(np.sin(2 * np.pi * 0.82 * t))[2000:]
+    assert abs(np.max(y) - gain) < 0.002
+    lag_fit, _, _ = V.best_lag(t[2000:], y / gain, t[2100:-100], np.sin(2 * np.pi * 0.82 * t[2100:-100]))
+    assert abs(lag_fit - lag) < 0.002
 
 
 def test_agreement_reads_gain_and_bias():
@@ -100,7 +120,7 @@ def test_whole_period_mean_is_not_fooled_by_a_swing_in_progress():
 def test_labview_reader_reads_the_bench_layout(tmp_path):
     deg = np.linspace(0, 40, 2000)
     p = S.write_encoder_bin(str(tmp_path / "pf1126_001.bin"), deg, n_channels=7)
-    tr = V.read_encoder(p, "labview_bin", sample_rate_hz=1000.0)
+    tr = V.read_encoder(p, "labview_bin", sample_rate_hz=1000.0, n_channels=7)
     assert isinstance(tr, V.EncoderTrace) and tr.fs_hz == 1000.0
     np.testing.assert_allclose(tr.angle_deg, deg)
     np.testing.assert_allclose(tr.t_s, np.arange(2000) / 1000.0)
@@ -114,7 +134,18 @@ def test_labview_reader_takes_counts_a_channel_count_a_sign_and_a_zero(tmp_path)
     np.testing.assert_allclose(tr.angle_deg, -counts * 360.0 / 8000 - 1.0)
     assert tr.fs_hz == 500.0 and abs(tr.t_s[1] - 0.002) < 1e-12
     with pytest.raises(V.ValidationError, match="counts_per_rev"):
-        V.read_encoder(p, "labview_bin", n_channels=2, position_units="counts")
+        V.read_encoder(p, "labview_bin", sample_rate_hz=500.0, n_channels=2, position_units="counts")
+
+
+def test_the_bin_reader_infers_nothing_and_takes_no_misspelt_option(tmp_path):
+    """The file carries no sample rate and no channel count: both must be stated."""
+    p = S.write_encoder_bin(str(tmp_path / "e.bin"), np.zeros(700))
+    with pytest.raises(V.ValidationError, match="sample_rate_hz and n_channels"):
+        V.read_encoder(p, "labview_bin", n_channels=7)
+    with pytest.raises(V.ValidationError, match="sample_rate_hz and n_channels"):
+        V.read_encoder(p, "labview_bin", sample_rate_hz=1000.0)
+    with pytest.raises(V.ValidationError, match="not what the"):
+        V.read_encoder(p, "labview_bin", sample_rate_hz=1000.0, n_channels=7, sample_rate=1000.0)
 
 
 def test_unknown_formats_are_refused_not_guessed(tmp_path):
@@ -132,12 +163,16 @@ def test_a_new_reader_can_be_registered(tmp_path, monkeypatch):
 
 
 # ───────────────────────── synthetic trials ─────────────────────────
+ENC = dict(sample_rate_hz=1000.0, n_channels=7)
+
+
 def _trial(tmp, name, radius=0.30, analyse_radius="same", **kw):
     enc = kw.pop("encoder", None) or S.EncoderErrors()
     tr = S.synthesize(name=name, radius_m=radius, encoder=enc, **kw)
     phone = S.write(tr, str(tmp), str(tmp / f"{name}.bin"))
     r = radius if analyse_radius == "same" else analyse_radius
-    return tr, phone, str(tmp / f"{name}.bin"), V.analyse_trial(phone, str(tmp / f"{name}.bin"), radius_m=r)
+    return tr, phone, str(tmp / f"{name}.bin"), V.analyse_trial(phone, str(tmp / f"{name}.bin"), radius_m=r,
+                                                                encoder_opts=ENC)
 
 
 @pytest.fixture(scope="module")
@@ -165,25 +200,27 @@ def test_clock_offset_is_recovered_by_the_release_and_by_cross_correlation(base,
         assert abs(row["clock_offset_xcorr_s"] - want) < 0.005
         assert abs(row["clock_offset_diff_ms"]) < 5.0
         assert row["xcorr_quality"] > 0.99 and row["pass_sync"] is True
-        assert abs(row["clock_rate_ppm"]) < 200.0          # no clock-rate error was planted
+        # no clock-rate error was planted; one swing resolves it only to its standard error
+        assert abs(row["clock_rate_ppm"]) < 3 * row["clock_rate_ppm_se"] + 20.0
+        assert 10.0 < row["clock_rate_ppm_se"] < 120.0
 
 
 def test_gyro_gain_is_recovered(base, planted):
     """Signal B reads the planted gyro scale within 0.01; the app's first excursion (pure
     gyro, the accelerometer is gated off) moves by the same 3% within 0.7%."""
-    assert abs(base[3]["gyro_gain"] - 1.00) < 0.01
-    assert abs(planted[3]["gyro_gain"] - PLANTED["gyro_scale"]) < 0.01
+    assert abs(base[3]["gain_gyro"] - 1.00) < 0.01
+    assert abs(planted[3]["gain_gyro"] - PLANTED["gyro_scale"]) < 0.01
     ratio = lambda r: r["first_excursion_phone_deg"] / r["first_excursion_encoder_deg"]  # noqa: E731
     assert abs(ratio(planted[3]) / ratio(base[3]) - PLANTED["gyro_scale"]) < 0.007
     # The app's whole-swing gain moves the same way but by less: once the arm is slow the
     # fusion corrects towards the accelerometer, which knows nothing of the gyro's scale.
-    assert 1.010 < planted[3]["gain"] / base[3]["gain"] < 1.035
+    assert 1.010 < planted[3]["gain_matched"] / base[3]["gain_matched"] < 1.035
 
 
 def test_encoder_scale_error_is_seen_as_gain(tmp_path):
     """An encoder reading 2% low (a counts-per-revolution mistake) is a 1/0.98 gain."""
     row = _trial(tmp_path, "scale", release_deg=40.0, seed=5, encoder=S.EncoderErrors(scale=0.98))[3]
-    assert abs(row["gyro_gain"] - 1 / 0.98) < 0.01
+    assert abs(row["gain_gyro"] - 1 / 0.98) < 0.01
 
 
 def test_encoder_offset_and_noise_are_recovered(base, planted):
@@ -194,7 +231,7 @@ def test_encoder_offset_and_noise_are_recovered(base, planted):
     q = 360.0 / 8000 / math.sqrt(12)
     assert base[3]["encoder_hold_noise_deg"] < 0.02
     assert abs(planted[3]["encoder_hold_noise_deg"] / math.hypot(PLANTED["noise_deg"], q) - 1) < 0.25
-    assert abs(planted[3]["rmse"] - base[3]["rmse"]) < 0.3
+    assert abs(planted[3]["rmse_lagrm"] - base[3]["rmse_lagrm"]) < 0.3
     assert abs(planted[3]["release_from_rest_deg"] - 40.0) < 0.15
 
 
@@ -218,11 +255,12 @@ def test_the_app_angle_lags_by_its_own_smoothing_and_nothing_else(base):
     assert 45.0 < row["lag_ms"] < 80.0
     assert abs(row["lag_ms"] - row["ema_expected_lag_ms"]) < 15.0
     assert abs(row["lag_matched_ms"]) < 10.0
-    assert abs(row["gyro_lag_ms"]) < 5.0                   # the raw gyro is not late at all
-    assert row["rmse"] < 2.0 < row["rmse_clock"]
+    assert abs(row["lag_gyro_ms"]) < 5.0                   # the raw gyro is not late at all
+    assert row["rmse_lagrm"] < 2.0 < row["rmse_clock"]
+    assert abs(row["lag_minus_expected_ms"]) <= V.PROVISIONAL_LAG_VS_FOOTING_MS and row["pass_lag"] is True
     assert row["rmse_matched"] < row["rmse_clock"]
     # The same EMA lowers the gain on a swing: this is the footing, on a near-perfect sensor.
-    assert 0.93 < row["gain"] < 0.98
+    assert 0.92 < row["gain_lagrm"] < 0.96 and row["gain_clock"] < row["gain_lagrm"]
     assert 0.97 < row["gain_matched"] < 1.01
     assert row["app_zero_exact"] and 0.0 < row["zero_after_release_ms"] < 150.0
     assert 0.3 < row["zero_pose_fall_deg"] < 3.0
@@ -234,7 +272,7 @@ def test_angle_does_not_depend_on_radius_but_the_accelerometer_does(tmp_path):
     scale with the radius, and the across-arm reading changes sign past L_eq = 0.37 m."""
     near = _trial(tmp_path, "r10", radius=0.10, release_deg=40.0, seed=7)[3]
     far = _trial(tmp_path, "r40", radius=0.40, release_deg=40.0, seed=7)[3]
-    assert abs(near["gyro_gain"] - far["gyro_gain"]) < 0.005
+    assert abs(near["gain_gyro"] - far["gain_gyro"]) < 0.005
     assert abs(near["first_excursion_phone_deg"] - far["first_excursion_phone_deg"]) < 0.3
     assert abs(far["centripetal_peak_m_s2"] / near["centripetal_peak_m_s2"] - 4.0) < 0.1
     assert abs(far["accel_dev_from_g_max_m_s2"] / near["accel_dev_from_g_max_m_s2"] - 4.0) < 0.4
@@ -244,15 +282,15 @@ def test_angle_does_not_depend_on_radius_but_the_accelerometer_does(tmp_path):
 
 def test_an_unmeasured_radius_is_recorded_as_a_placeholder(base):
     _, phone, enc, _ = base
-    row = V.analyse_trial(phone, enc, radius_m=None)
+    row = V.analyse_trial(phone, enc, radius_m=None, encoder_opts=ENC)
     assert row["phone_radius_m"] == V.PHONE_RADIUS_PLACEHOLDER_M
     assert row["phone_radius_measured"] is False and "radius_placeholder" in row["flags"]
 
 
 def test_cross_correlation_alignment_gives_the_same_answer(base):
     _, phone, enc, row = base
-    alt = V.analyse_trial(phone, enc, radius_m=0.30, align="xcorr")
-    assert alt["align"] == "xcorr" and abs(alt["rmse"] - row["rmse"]) < 0.05
+    alt = V.analyse_trial(phone, enc, radius_m=0.30, align="xcorr", encoder_opts=ENC)
+    assert alt["align"] == "xcorr" and abs(alt["rmse_lagrm"] - row["rmse_lagrm"]) < 0.05
     assert abs(alt["lag_ms"] - row["lag_ms"]) < 3.0
 
 
@@ -263,7 +301,7 @@ def test_an_end_tap_stays_outside_the_comparison(base, tmp_path):
     ref = base[3]
     assert abs(row["release_encoder_s"] - ref["release_encoder_s"]) < 0.001
     assert abs(row["clock_offset_release_s"] - ref["clock_offset_release_s"]) < 0.001
-    assert abs(row["rmse"] - ref["rmse"]) < 0.02 and abs(row["window_s"] - ref["window_s"]) < 0.05
+    assert abs(row["rmse_lagrm"] - ref["rmse_lagrm"]) < 0.02 and abs(row["window_s"] - ref["window_s"]) < 0.05
     assert row["settled"] and row["encoder_duration_s"] - (row["release_encoder_s"] + row["settle_after_release_s"]) > 6.0
 
 
@@ -279,11 +317,11 @@ def test_the_repos_own_synthesiser_runs_through_too(tmp_path):
     full = np.concatenate([np.zeros(3000), sw, np.full(7000, sw[-1])])
     start = 0.25                                           # the encoder log starts 250 ms late
     S.write_encoder_bin(str(tmp_path / "pt.bin"), full[int(start * 1000):])
-    row = V.analyse_trial(phone, str(tmp_path / "pt.bin"), radius_m=0.25)
+    row = V.analyse_trial(phone, str(tmp_path / "pt.bin"), radius_m=0.25, encoder_opts=ENC)
     assert abs(row["clock_offset_release_s"] - start) < 0.005
     assert abs(row["clock_offset_xcorr_s"] - start) < 0.005
-    assert abs(row["gyro_gain"] - 1.0) < 0.01
-    assert row["rmse"] < 2.0
+    assert abs(row["gain_gyro"] - 1.0) < 0.01
+    assert row["rmse_lagrm"] < 2.0
 
 
 # ───────────────────────── the footing, and refusals ─────────────────────────
@@ -356,19 +394,162 @@ def test_wrong_units_in_the_export_are_refused(base, tmp_path):
 
 def test_limits_are_named_and_marked_provisional():
     names = [n for n in dir(V) if n.startswith("PROVISIONAL_")]
-    assert len(names) >= 12
+    assert len(names) >= 18
+    assert {k for k, _ in V.provisional_constants()} == set(names)
+    # which comparison a criterion is judged on is a named, provisional choice too
+    assert V.PROVISIONAL_A3_GAIN_VARIANT == "matched" and V.PROVISIONAL_A1_A2_VARIANT == "lagrm"
     assert "PROPOSED" in V.LIMITS_STATUS and "pending supervisor confirmation" in V.LIMITS_STATUS
     assert V.PROVISIONAL_A1_RMSE_EACH_DEG == 5.0 and V.PROVISIONAL_A3_GAIN == (0.97, 1.03)
 
 
 def test_judge_trial_applies_the_larger_of_three_degrees_and_five_percent():
-    r = dict(rmse=1.0, gain=1.0, r=0.999, first_excursion_encoder_deg=112.0, first_excursion_error_deg=-5.0,
+    r = dict(rmse_lagrm=1.0, gain_matched=1.0, r_lagrm=0.999, first_excursion_encoder_deg=112.0, first_excursion_error_deg=-5.0,
              f_error_pct=0.5, tau_error_pct=3.0, n_swings_error=0.0, clock_offset_diff_ms=1.0)
     assert V.judge_trial(r)["pass_A4_excursion"] is True       # 5% of 112 is 5.6 deg
     r["first_excursion_encoder_deg"] = 40.0
     assert V.judge_trial(r)["pass_A4_excursion"] is False      # 3 deg applies
     r["tau_error_pct"] = float("nan")
     assert V.judge_trial(r)["pass_all"] is None                # not assessable is not a pass
+
+
+# ───────────────────────── what a verdict rests on ─────────────────────────
+def _altered_app(monkeypatch, change):
+    """Run the real replay, then alter what it returned (a faulty app, planted exactly)."""
+    real = V.app_angle
+
+    def fake(samples):
+        a = real(samples)
+        change(a)
+        return a
+
+    monkeypatch.setattr(V, "app_angle", fake)
+
+
+def _again(fx, **kw):
+    return V.analyse_trial(fx[1], fx[2], radius_m=0.30, encoder_opts=ENC, **kw)
+
+
+def test_an_app_reading_five_percent_high_fails_A3_and_an_unscaled_one_passes(base, monkeypatch):
+    """A3 is judged on the gain against the EMA-matched encoder (a provisional choice,
+    printed with the verdict). The app's output x1.00 passes; x1.05 fails. Against the
+    unsmoothed encoder it is the other way round, which is why all three gains are reported."""
+    good = base[3]
+    assert good["pass_A3_gain"] is True and abs(good["gain_matched"] - 1.0) < 0.015
+    assert "EMA-matched" in good["judged_on"]
+    _altered_app(monkeypatch, lambda a: a.update(swing_deg=1.05 * a["swing_deg"]))
+    high = _again(base)
+    assert abs(high["gain_matched"] / good["gain_matched"] - 1.05) < 0.002
+    assert high["pass_A3_gain"] is False and high["pass_all"] is False
+    lo, hi = V.PROVISIONAL_A3_GAIN
+    assert good["gain_lagrm"] < lo < high["gain_lagrm"] < hi
+    assert abs(high["gain_gyro"] - good["gain_gyro"]) < 1e-9          # the sensor itself did not change
+
+
+def test_a_constant_error_on_the_app_reaches_the_bias_of_every_comparison(base, monkeypatch):
+    good = base[3]
+    _altered_app(monkeypatch, lambda a: a.update(swing_deg=a["swing_deg"] + 3.0))
+    off = _again(base)
+    for tag in ("abs", "clock", "matched"):
+        assert abs(off[f"bias_{tag}"] - good[f"bias_{tag}"] - 3.0) < 0.01
+    assert abs(off["bias_rest_abs"] - good["bias_rest_abs"] - 3.0) < 0.01
+
+
+def test_gain_rmse_and_bias_are_over_the_swing_with_hold_and_rest_apart(base):
+    """The swing window is release to settled. Moving the zero instant by +/-20 ms moves
+    the gain by under 0.015 (and would not change the A3 verdict)."""
+    row = base[3]
+    assert abs(row["swing_window_s"] - row["settle_after_release_s"]) < 1e-9
+    assert abs(row["n_grid_swing"] - row["swing_window_s"] / V.GRID_S) <= 1
+    assert row["window_s"] > row["swing_window_s"] + V.PRE_RELEASE_S
+    for tag in ("abs", "clock", "lagrm", "matched"):
+        for k in ("rmse", "bias", "gain", "r", "loa_lo", "loa_hi", "rmse_hold", "rmse_rest", "bias_hold", "bias_rest"):
+            assert np.isfinite(row[f"{k}_{tag}"])
+    assert row["gain_matched_zero_pm20ms_span"] < 0.015
+    lo, hi = V.PROVISIONAL_A3_GAIN
+    assert lo < row["gain_matched"] - row["gain_matched_zero_pm20ms_span"]
+    assert row["gain_matched"] + row["gain_matched_zero_pm20ms_span"] < hi
+    # the app's zero pose is late; only the absolute comparison carries it
+    assert row["bias_abs"] < row["bias_clock"] - 0.5 and row["rmse_abs"] > row["rmse_lagrm"] + 1.0
+    assert abs((row["bias_clock"] - row["bias_abs"]) - row["zero_pose_fall_deg"]) < 0.3
+    assert row["pass_zero_fall"] is (row["zero_pose_fall_deg"] <= V.PROVISIONAL_ZERO_POSE_FALL_MAX_DEG)
+
+
+_PASSING = dict(rmse_lagrm=1.0, gain_matched=1.0, r_lagrm=0.999, first_excursion_encoder_deg=60.0,
+                first_excursion_error_deg=-1.0, f_error_pct=0.5, tau_error_pct=3.0, n_swings_error=0.0,
+                clock_offset_diff_ms=1.0, lag_minus_expected_ms=2.0, zero_pose_fall_deg=0.5)
+
+
+def test_every_quality_flag_stops_a_swing_being_passed():
+    assert V.judge_trial(dict(_PASSING, flags="radius_placeholder"))["pass_all"] is True
+    for flag in V.GATING_FLAGS:
+        j = V.judge_trial(dict(_PASSING, flags=f"radius_placeholder;{flag}"))
+        assert j["not_assessed_because"] == flag
+        assert all(v is None for k, v in j.items() if k.startswith("pass_")), flag
+        assert not V.is_assessed(dict(j))
+    for flag in ("hold_not_still", "phone_gap", "pairing_suspect", "not_settled", "zero_instant_approximate"):
+        assert flag in V.GATING_FLAGS
+
+
+def test_an_inexact_zero_instant_is_looked_for_near_the_release_only_and_is_not_assessed(base, monkeypatch):
+    """No tick holds the zero quaternion, and the nearest one anywhere is 5 s before the
+    release (in the lift): the instant used stays within half a second of the release, the
+    swing is flagged and nothing is passed."""
+    def lose_zero(a):
+        k = int(np.argmin(np.abs(a["tick_t"] - (base[3]["release_phone_s"] - 5.0))))
+        a["tick_dist"] = a["tick_dist"].copy()
+        a["tick_dist"][k] = 0.0
+        a["t_zero"] = None
+
+    _altered_app(monkeypatch, lose_zero)
+    row = _again(base)
+    assert row["app_zero_exact"] is False and "zero_instant_approximate" in row["flags"]
+    assert abs(row["zero_after_release_ms"]) <= 500.0
+    assert row["pass_all"] is None and row["pass_A1_rmse"] is None
+    assert np.isfinite(row["rmse_lagrm"])                              # reported all the same
+
+
+def test_a_zero_pose_taken_away_from_the_release_is_not_assessed(base, monkeypatch):
+    _altered_app(monkeypatch, lambda a: a.update(t_zero=a["t_zero"] - 4.0))
+    row = _again(base)
+    assert "zero_not_at_release" in row["flags"] and row["pass_all"] is None
+    assert row["zero_after_release_ms"] < -3500.0
+
+
+def test_a_lag_pegged_at_the_search_bound_is_flagged_not_reported(base, monkeypatch):
+    _altered_app(monkeypatch, lambda a: a.update(t=a["t"] + 0.40))
+    row = _again(base)
+    assert "lag_pegged" in row["flags"] and np.isnan(row["lag_ms"])
+    assert abs(row["lag_pegged_at_ms"] - 1e3 * V.LAG_SEARCH_S) < 1e-6
+    assert row["pass_lag"] is None and row["pass_all"] is None
+
+
+def test_a_lag_off_the_footings_is_failed(base, monkeypatch):
+    """120 ms late on top of the EMA: inside the search, so it is a lag, and it is judged."""
+    _altered_app(monkeypatch, lambda a: a.update(t=a["t"] + 0.12))
+    row = _again(base)
+    assert abs(row["lag_minus_expected_ms"] - 120.0 - base[3]["lag_minus_expected_ms"]) < 5.0
+    assert row["pass_lag"] is False and "lag_pegged" not in row["flags"]
+
+
+def test_the_swing_count_is_made_on_each_source(base, monkeypatch):
+    """An app reading half the angle loses its small swings under the floor: it counts fewer
+    than the encoder, and A5 fails on the count (the count is not the app scorer's N)."""
+    assert abs(base[3]["n_swings_error"]) <= 1
+    _altered_app(monkeypatch, lambda a: a.update(swing_deg=0.5 * a["swing_deg"]))
+    row = _again(base)
+    assert row["n_swings_phone"] <= row["n_swings_encoder"] - 2 and row["pass_A5_n"] is False
+
+
+def test_a_swing_paired_with_another_swings_encoder_log_is_flagged(base, tmp_path):
+    """The 40 deg phone export against a 20 deg encoder log. The cross-correlation is above
+    0.9 (it does not discriminate); the release angle and the peak speed do."""
+    other = _trial(tmp_path, "twenty", release_deg=20.0, seed=9)
+    row = V.analyse_trial(base[1], other[2], radius_m=0.30, encoder_opts=ENC, nominal_release_deg=40.0)
+    assert row["xcorr_quality"] > 0.9
+    assert "release_angle_mismatch" in row["flags"] and "pairing_suspect" in row["flags"]
+    assert row["pass_all"] is None
+    assert "release_angle_mismatch" in _again(base, nominal_release_deg=20.0)["flags"]
+    assert _again(base, nominal_release_deg=40.0)["flags"] == ""
 
 
 # ───────────────────────── a session ─────────────────────────
@@ -387,35 +568,52 @@ def test_session_pairs_by_the_rig_log_and_recovers_every_clock_offset(session):
     for r in rows:
         assert abs(r["clock_offset_release_s"] - truths[r["trial_id"]]["clock_offset_s"]) < 0.005
         assert abs(r["release_from_rest_deg"] - r["release_nominal_deg"]) < 0.2
+        assert abs(r["release_angle_minus_nominal_deg"]) < 0.2 and r["flags"] == ""
         assert r["platform"] == "iphone" and r["phone_radius_measured"] is True
     assert {r["added_mass_kg"] for r in rows} == {0.0, 3.0, 6.0}
 
 
-def test_session_report_matches_the_run_sheet_and_says_the_limits_are_provisional(session, tmp_path):
+def test_session_report_matches_the_run_sheet_and_says_what_every_number_is(session, tmp_path):
     folder, truths, rows, sess = session
     md = V.write_report(rows, [sess], str(tmp_path / "report"))
     assert V.LIMITS_STATUS in md and "SYNTHETIC DATA" in md
     assert "| Seq | Trial ID | Condition | Release (deg) | Mode | Encoder file | App result | Stopped by |" in md
     for tid in truths:
         assert f"`{tid}`" in md
-    for crit in ("| A1 |", "| A2 |", "| A3 |", "| A4 |", "| A5 |", "| A7 |", "| A9* |"):
+    for crit in ("| A1 |", "| A2 |", "| A3 |", "| A4 |", "| A5 |", "| A7 |", "| A9* |", "| L* |", "| Z* |"):
         assert crit in md
     assert "NOT EVALUATED" in md and "REFERENCE_REPLAY_CONFIG" in md
     assert "| W0 |" in md and "20 deg" in md and "40 deg" in md
+    # every figure names its comparison; the three gains sit side by side
+    for label in ("RMSE absolute", "RMSE clock-aligned", "RMSE lag-removed", "RMSE EMA-matched", "Gain raw gyro",
+                  "Gain app vs unsmoothed encoder (lag-removed)", "Gain app vs EMA-matched encoder",
+                  "| # | Criterion | Judged on |"):
+        assert label in md
+    assert "6/6 swings assessed" in md
+    assert "wrong polarity" in md and "not observable" in md
+    assert "does not prove the pairing" in md and "Counts agree" not in md
+    assert "## Provisional constants awaiting the supervisor" in md
+    for name, _ in V.provisional_constants():
+        assert f"`{name}`" in md
     with open(tmp_path / "report" / "trials.csv", encoding="utf-8", newline="") as fh:
         table = list(csv.DictReader(fh))
     assert len(table) == len(rows) and table[0]["footing"] == V.REFERENCE_FOOTING
-    assert table[0]["limits_status"] == V.LIMITS_STATUS
+    assert table[0]["limits_status"] == V.LIMITS_STATUS and "EMA-matched" in table[0]["judged_on"]
 
 
 def test_pooled_criteria_use_one_number_per_swing(session):
     rows = session[2]
     P = V.pooled(rows)
-    assert P["n"] == 6 and "bias_pooled" in P and "mass_slope" in P
+    assert P["n"] == P["n_total"] == 6 and "bias_pooled" in P and "mass_slope" in P
     assert P["loa_lo_bound"] < P["loa_lo"] < P["bias_pooled"] < P["loa_hi"] < P["loa_hi_bound"]
-    v = {x["criterion"]: x["verdict"] for x in V.verdicts(rows)}
-    assert v["A1"] == "PASS" and v["A9*"] == "PASS"
-    assert v["A6"].startswith("NOT EVALUATED") and v["A8"].startswith("NOT EVALUATED")
+    # the clock rate is judged on the session's fit: tighter than any one swing's
+    assert P["clock_ppm_n"] == 6 and P["clock_ppm_se"] < min(r["clock_rate_ppm_se"] for r in rows)
+    assert abs(P["clock_ppm_mean"]) < 3 * P["clock_ppm_se"] + 20.0
+    v = {x["criterion"]: x for x in V.verdicts(rows)}
+    assert v["A1"]["verdict"] == "PASS" and v["A3"]["verdict"] == "PASS" and v["A9*"]["verdict"] == "PASS"
+    assert v["L*"]["verdict"] == "PASS"
+    assert "EMA-matched" in v["A3"]["judged_on"] and "lag removed" in v["A1"]["judged_on"]
+    assert v["A6"]["verdict"].startswith("NOT EVALUATED") and v["A8"]["verdict"].startswith("NOT EVALUATED")
     assert V.verdicts(rows[:2])[1]["verdict"] == "NOT ASSESSABLE"      # A2 needs three swings
 
 
@@ -425,29 +623,16 @@ def _copy_session(src, dst):
     return str(dst)
 
 
-def test_a_count_mismatch_stops_the_session(session, tmp_path):
-    folder = _copy_session(session[0], tmp_path / "s")
+def _edit_log(folder, change):
     log = os.path.join(folder, "rig_log.csv")
-    lines = open(log, encoding="utf-8").read().splitlines()
-    open(log, "w", encoding="utf-8").write("\n".join(lines[:-1]) + "\n")
-    with pytest.raises(V.ValidationError, match="COUNT MISMATCH"):
-        V.analyse_session(folder)
-    rows, sess = V.analyse_session(folder, allow_count_mismatch=True)
-    assert len(rows) == 5 and "COUNT MISMATCH" in sess["pairing_note"]
-
-
-def test_error_rows_are_dropped_and_a_missing_encoder_file_is_reported_not_skipped(session, tmp_path):
-    folder = _copy_session(session[0], tmp_path / "s")
-    log = os.path.join(folder, "rig_log.csv")
-    text = open(log, encoding="utf-8").read().rstrip("\n")
-    open(log, "w", encoding="utf-8").write(
-        text + "\n7,PF-S1-W4-A60-Q-07,7,W4,60,quicktest,ERROR: no release,auto,\n")
-    os.remove(glob_one(folder, "encoder", "*_003.bin"))
-    rows, sess = V.analyse_session(folder)
-    assert len(rows) == 6 and len(sess["log"]) == 7 and len(sess["usable"]) == 6
-    assert "no encoder file" in rows[2]["error"] and rows[2]["trial_id"].endswith("-03")
-    md = V.summary_markdown(rows, [sess])
-    assert "not analysed" in md and "1 marked ERROR" in md
+    with open(log, encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    cols = list(rows[0])
+    cols, rows = change(cols, rows) or (cols, rows)
+    with open(log, "w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
 
 
 def glob_one(folder, sub, pat):
@@ -456,19 +641,126 @@ def glob_one(folder, sub, pat):
     return hit
 
 
-def test_session_json_must_say_what_the_encoder_is(session, tmp_path):
+def test_a_count_mismatch_stops_the_session(session, tmp_path):
+    folder = _copy_session(session[0], tmp_path / "s")
+    _edit_log(folder, lambda cols, rows: (cols, rows[:-1]))
+    with pytest.raises(V.ValidationError, match="COUNT MISMATCH: 5 rig-log rows without ERROR against 6"):
+        V.analyse_session(folder)
+    rows, sess = V.analyse_session(folder, allow_count_mismatch=True)
+    assert len(rows) == 5 and "COUNT MISMATCH" in sess["pairing_note"]
+
+
+def test_the_encoder_files_are_counted_and_a_reused_number_is_refused(session, tmp_path):
+    import shutil
+    extra = _copy_session(session[0], tmp_path / "extra")
+    shutil.copy(glob_one(extra, "encoder", "*_001.bin"), os.path.join(extra, "encoder", "pf1126_009.bin"))
+    with pytest.raises(V.ValidationError, match="6 rig-log rows name an encoder file against 7 encoder files"):
+        V.analyse_session(extra)
+    twice = _copy_session(session[0], tmp_path / "twice")
+    shutil.copy(glob_one(twice, "encoder", "*_002.bin"), os.path.join(twice, "encoder", "retake_001.bin"))
+    with pytest.raises(V.ValidationError, match="two files end in the number 1"):
+        V.analyse_session(twice, allow_count_mismatch=True)
+
+    def same_number(cols, rows):
+        rows[1]["encoder_trial"] = rows[0]["encoder_trial"]
+
+    _edit_log(extra, same_number)
+    with pytest.raises(V.ValidationError, match="more than one row"):
+        V.analyse_session(extra, allow_count_mismatch=True)
+
+
+def test_a_pairing_shifted_by_one_with_equal_counts_is_flagged_and_passes_nothing(session, tmp_path):
+    """Rows 1 and 2 (20 and 40 deg) name each other's encoder file. Every count agrees; the
+    encoder's release angle does not match the log's, so both swings are not assessed and
+    no criterion can print PASS."""
+    folder = _copy_session(session[0], tmp_path / "s")
+
+    def swap(cols, rows):
+        rows[0]["encoder_trial"], rows[1]["encoder_trial"] = rows[1]["encoder_trial"], rows[0]["encoder_trial"]
+
+    _edit_log(folder, swap)
+    rows, sess = V.analyse_session(folder)
+    assert "pairing_note" not in sess
+    for r in rows[:2]:
+        assert "release_angle_mismatch" in r["flags"] and r["pass_all"] is None
+    assert all(r["flags"] == "" for r in rows[2:])
+    vs = V.verdicts(rows)
+    assert not any(v["verdict"] == "PASS" for v in vs)
+    assert all("4/6 swings assessed" in v["value"] for v in vs if v["criterion"] in ("A1", "A3", "A4", "A5", "A9*"))
+    assert "NOT ASSESSED" in V.summary_markdown(rows, [sess])
+
+
+def test_a_swing_that_could_not_be_analysed_stops_every_criterion_passing(session, tmp_path):
+    """An ERROR attempt in the log is dropped from the pairing; a swing whose encoder log
+    cannot be read stays in the table as not analysed, and no criterion prints PASS."""
+    folder = _copy_session(session[0], tmp_path / "s")
+
+    def add_error(cols, rows):
+        rows.append(dict(seq="7", trial_id="PF-S1-W4-A60-Q-07", encoder_trial="", condition="W4",
+                         release_angle_deg="60", mode="quicktest", app_result="ERROR: no release", stopped_by="auto"))
+
+    _edit_log(folder, add_error)
+    with open(glob_one(folder, "encoder", "*_003.bin"), "r+b") as fh:
+        fh.truncate(7 * 8 * 50)                                        # 50 samples: not a recording
+    rows, sess = V.analyse_session(folder)
+    assert len(rows) == 6 and len(sess["log"]) == 7 and len(sess["usable"]) == 6
+    assert "too short" in rows[2]["error"] and rows[2]["trial_id"].endswith("-03")
+    vs = {v["criterion"]: v for v in V.verdicts(rows)}
+    assert vs["A1"]["verdict"] == "INCOMPLETE" and "5/6 swings assessed" in vs["A1"]["value"]
+    assert not any(v["verdict"] == "PASS" for v in vs.values())
+    md = V.summary_markdown(rows, [sess])
+    assert "not analysed" in md and "1 marked ERROR" in md and "INCOMPLETE" in md
+
+
+def test_a_rig_log_that_cannot_carry_the_pairing_is_refused(session, tmp_path):
+    gone = _copy_session(session[0], tmp_path / "gone")
+    os.remove(os.path.join(gone, "rig_log.csv"))
+    with pytest.raises(V.ValidationError, match="no rig_log.csv"):
+        V.analyse_session(gone)
+    bare = _copy_session(session[0], tmp_path / "bare")
+    _edit_log(bare, lambda cols, rows: ([c for c in cols if c != "app_result"], rows))
+    with pytest.raises(V.ValidationError, match="app_result"):
+        V.analyse_session(bare)
+
+
+def test_session_json_must_say_what_the_encoder_is_and_takes_no_unknown_key(session, tmp_path):
     folder = _copy_session(session[0], tmp_path / "s")
     sj = os.path.join(folder, "session.json")
-    info = json.load(open(sj, encoding="utf-8"))
-    del info["encoder"]["sample_rate_hz"]
-    info["encoder"]["model"] = ""
-    json.dump(info, open(sj, "w", encoding="utf-8"))
-    with pytest.raises(V.ValidationError, match="encoder.sample_rate_hz"):
+    with open(sj, encoding="utf-8") as fh:
+        good = json.load(fh)
+
+    def put(info):
+        with open(sj, "w", encoding="utf-8") as fh:
+            json.dump(info, fh)
+
+    for key in ("sample_rate_hz", "n_channels"):
+        put(dict(good, encoder={k: v for k, v in good["encoder"].items() if k != key}))
+        with pytest.raises(V.ValidationError, match=f"encoder.{key}"):
+            V.analyse_session(folder)
+    put(dict(good, phone_radius=0.3))                                   # misspelt
+    with pytest.raises(V.ValidationError, match="unknown key"):
         V.analyse_session(folder)
-    info["encoder"]["sample_rate_hz"] = 1000.0
-    info["phone_radius_measured"] = False
-    json.dump(info, open(sj, "w", encoding="utf-8"))
+    put(dict(good, encoder=dict(good["encoder"], samplerate=1000.0)))   # misspelt reader option
+    rows, _ = V.analyse_session(folder)
+    assert all("not what the" in r["error"] for r in rows)
+    # a radius with no statement that it was measured is the placeholder, and says so
+    info = {k: v for k, v in good.items() if k != "phone_radius_measured"}
+    info["encoder"] = dict(good["encoder"], model="")
+    put(info)
     rows, sess = V.analyse_session(folder)
     assert "encoder.model" in sess["info"]["_to_fill"]
-    assert all("radius_placeholder" in r["flags"] for r in rows)
-    assert "PLACEHOLDER, not measured" in V.summary_markdown(rows, [sess])
+    assert all("radius_placeholder" in r["flags"] and r["phone_radius_measured"] is False for r in rows)
+    assert all(r["phone_radius_m"] == V.PHONE_RADIUS_PLACEHOLDER_M for r in rows)
+    assert "PLACEHOLDER, not recorded as measured" in V.summary_markdown(rows, [sess])
+
+
+def test_the_session_template_is_one_the_loader_accepts(tmp_path):
+    """Every key of docs/bench's session.json template is known, and it is refused only for
+    what is still to fill (the sample rate), not for its shape."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, "docs", "bench", "2026-11-18-free-pendulum-session-template.json"), encoding="utf-8") as fh:
+        tpl = json.load(fh)
+    assert set(tpl) <= V.SESSION_KEYS and set(tpl["phone"]) <= V.PHONE_KEYS
+    (tmp_path / "session.json").write_text(json.dumps(tpl), encoding="utf-8")
+    with pytest.raises(V.ValidationError, match="encoder.sample_rate_hz"):
+        V.load_session(str(tmp_path))
