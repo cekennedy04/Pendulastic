@@ -198,7 +198,7 @@ def test_a_slow_hand_release_is_never_passed_on_a_zero_pose_from_somewhere_else(
     _, _, _, row = _analyse(tmp_path, "hand", hand_s=0.4)
     exact_and_near = row["app_zero_exact"] and abs(row["zero_after_release_ms"]) <= 500.0
     if not exact_and_near:
-        assert row["pass_all"] is None and row["not_assessed_because"]
+        assert row["pass_all"] is not True and (row["not_assessed_because"] or row["app_fault"])
     assert abs(row["zero_after_release_ms"]) <= 500.0 or "zero_not_at_release" in row["flags"]
     # A slow release lets the arm fall further before the app zeroes; that is judged, not absorbed.
     assert row["zero_pose_fall_deg"] > 1.0 and row["pass_zero_fall"] is False
