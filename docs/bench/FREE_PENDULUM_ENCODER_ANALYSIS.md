@@ -34,11 +34,23 @@ Output goes to `<session folder>/report/` (or `--out`): `summary.md` (read this)
 (every number, one row per swing), `peaks.json` (peak-by-peak table) and, with `--plots`, an
 overlay per swing. Exit code 0 = all swings analysed, 1 = at least one swing could not be
 analysed (it stays in the table with the reason), 2 = refused (the message says why).
-Refused, among others: a `--encoder-channels` / `encoder.n_channels` the file cannot be
-(its size is not a whole number of such samples, or the "position" it gives is not
-continuous), a phone export with a non-finite (NaN) or malformed sample, and a rig-log
-`release_angle_deg` that is not a number. In a session the first two are per swing ("not
-analysed", exit 1); for one `trial` they are exit 2. A channel count that happens to give
+
+**The exit code says whether the analysis ran, not what it found.** A session whose overall
+verdict is FAIL or UNRESOLVED still exits 0. That is deliberate: every limit is PROPOSED, a
+FAIL is a result and not a tool error, and the synthetic session itself fails `Z*` and A5.
+The verdict is the `OVERALL (<phone>): ...` line, printed last on stdout and as
+"**Overall, ...**" under each phone's criteria in `summary.md`. Do not gate anything on the
+exit code alone.
+
+What is refused (exit 2), and what is only "not analysed" (exit 1):
+
+| Problem | `session` | `trial` |
+|---|---|---|
+| `session.json` or the manifest is not valid JSON, has an unknown key or lacks a required field; no `rig_log.csv` or a missing column; counts that do not agree; a `release_angle_deg` that is not a number; a `phone_file` pairing that is not one-to-one | REFUSED, exit 2 | n/a |
+| A channel count the encoder file cannot be (its size is not a whole number of such samples, or the "position" it gives is not continuous) | that swing "not analysed", exit 1 (every swing, if `encoder.n_channels` is wrong) | REFUSED, exit 2 |
+| A phone export with a non-finite (NaN) or malformed sample, wrong units, or no zero pose in the replay | that swing "not analysed", exit 1 | REFUSED, exit 2 |
+
+A channel count that happens to give
 a smooth trace (for example twice the true count, which reads every other position sample)
 is **not** caught by these checks; it has not been tried.
 
@@ -108,8 +120,21 @@ report and listed there as TO FILL until supplied.
 dropped; the rest are matched in order to the exported phone trials sorted by manifest
 timestamp. If any trial in the manifest has no numeric `timestamp`, the timestamps cannot
 order the session: the manifest's own order is used for all of them, a WARNING is printed,
-the report says so under the session and every swing carries `manifest_order_unverified`
-(reported; it does not stop a swing being judged, and nothing checks that order).
+the report says so under the session and every swing carries `manifest_order_unverified`.
+The swings are still judged, but nothing checks that order, so, exactly as with
+`--allow-count-mismatch`, **no criterion can read PASS**: INCOMPLETE at best.
+
+**Stating the pairing instead of inferring it.** Either of these replaces the order rule
+(timestamps are then not needed and the manifest's order does not matter), and the report's
+"Paired by" line says which was used:
+
+- a `phone_file` column in `rig_log.csv` naming the exported `.jsonl` of each row that is
+  not an ERROR (all such rows, or none); or
+- a `trial_id` on every trial in the manifest, equal to the rig log's (the app does not
+  write one today; this is for a manifest edited or exported with it).
+
+The pairing must then be one-to-one or the session is refused. The rig log's own
+`trial_id` column does not do this by itself: it names the row, not the phone file.
 
 If the counts differ (rows against phone trials, or rows naming an encoder file against
 encoder files) the script stops (`COUNT MISMATCH`) rather than guess. Fix the log.
@@ -126,6 +151,17 @@ encoder's release angle (`phone_tilt_release_deg`, `phone_tilt_minus_encoder_deg
 and the ratio of first-swing peak speeds (outside 0.80 to 1.25), read together as set out
 under "Whose fault a flag is". Two repeats at the same angle and weight swapped with each
 other cannot be told apart from the data; only the log can.
+
+**A wrong pairing can look like an app failure.** Two swings at the same release angle but
+different weights, paired with each other's files, pass every pairing check above (same
+release angle, same static tilt, similar peak speed). The arm's frequency and decay differ,
+so the swing arrives as an ordinary, unflagged FAIL on A3, A5 or the lag, with nothing in
+the report to tell it from a faulty app. In the second review's synthetic check 38 of 60
+such swaps did so (that figure is the reviewer's and has not been re-run here). Mitigation,
+at the bench and before reading any FAIL as the app's: the rig log carries the `trial_id`
+of every swing; check that the log and the export agree in order at every block boundary
+(each change of weight or angle), and state the pairing with a `phone_file` column where
+you can.
 
 **Still unknown, and the owner's to supply:** encoder model, counts per revolution, DAQ and
 log format; the measured phone radius; the supervisor's confirmation of the limits and of
@@ -176,7 +212,7 @@ side, cannot be detected by this script.
 | Coverage | `settled`, `settle_after_release_s`, `swing_window_s`, `phone_record_ends_after_release_s` | |
 | The off-axis phone | `phone_radius_m`, `phone_radius_measured`, `l_eq_small_angle_m`, `tangential_accel_fraction`, `centripetal_peak_m_s2`, `tangential_peak_m_s2`, `accel_dev_from_g_max_m_s2`, `accel_gate_open_fraction` | See below. |
 | The app's zero pose | `app_zero_exact`, `zero_after_release_ms`, `zero_pose_fall_deg`, `fold_fraction` | See below. |
-| Verdicts | `pass_*`, `pass_all` (A1 to A5 and no app fault), `not_assessed_because`, `app_fault`, `judged_on` | Blank = not assessed. `pass_all` is false if any one of them is false, blank only if none failed and one could not be reached. |
+| Verdicts | `pass_*`, `pass_A1_A5` (A1 to A5 only), `pass_no_app_fault`, `pass_all` (the swing: A1 to A5 and no app fault), `not_assessed_because`, `app_fault`, `judged_on` | Blank = not assessed. `pass_A1_A5` and `pass_all` are false if any one part is false, blank only if none failed and one could not be reached. |
 
 `summary.md` repeats the run sheet's table (Seq, Trial ID, Condition, Release, Mode, Encoder
 file, App result, Stopped by) with the results beside each row, then a weight by release-angle
@@ -188,26 +224,44 @@ list of provisional constants.
 - **A swing with a gating flag is reported but not passed.** Any of `hold_not_still`,
   `phone_gap`, `pairing_suspect`, `release_angle_mismatch`, `release_angle_not_checked`,
   `release_not_where_xcorr_expects`, `not_settled`, `phone_ends_before_settled`,
-  `zero_instant_approximate`, `zero_on_other_motion`, `zero_before_encoder_log`, `no_peaks`
+  `zero_instant_approximate`, `zero_on_other_motion`, `zero_before_encoder_log`,
+  `zero_encoder_cannot_tell`, `no_peaks`
   makes every verdict of that swing blank (NOT ASSESSED), with the reason in
   `not_assessed_because`. Gating is for what the fixture, the operator, the log or this
   analysis got wrong. **A fault of the phone or the app is not a reason to set a swing
   aside**: see "Whose fault a flag is".
-- **An app fault fails the swing.** `zero_misplaced_by_app` and `lag_pegged` are listed in
-  `app_fault`; the swing is assessed, `pass_no_app_fault` and `pass_all` are false whatever
-  its A1 to A5 numbers say (those comparisons forgive the zero pose and the lag by
-  construction, which is what the app got wrong), the swing's A1-A5 cell reads
-  `FAIL (app fault: ...)`, and the session's `APP*` line reads FAIL.
+- **An app fault fails the swing, on its own line.** `zero_misplaced_by_app` and
+  `lag_pegged` are listed in `app_fault`; `pass_no_app_fault` and `pass_all` are false
+  whatever the A1 to A5 numbers say (those comparisons forgive the zero pose and the lag by
+  construction, which is what the app got wrong), and the session's `APP*` line reads FAIL.
+- **A1-A5 means A1 to A5.** Per swing there are three things, in three columns: `A1-A5`
+  (`pass_A1_A5`: criteria A1 to A5 and nothing else), `App fault` (`app_fault`), and `Swing`
+  (`pass_all`: A1 to A5 **and** no app fault; reads `FAIL (app fault: ...)` on a fault). The
+  "A1-A5 passed / assessed / attempted" counts and A7's "every assessed cell passes A1 to
+  A5" use `pass_A1_A5`, so an app fault moves the `APP*` line and no other.
+- **A proven app fault survives a swing that cannot be assessed.** If the only gating flags
+  are about coverage (`not_settled`, `phone_ends_before_settled`, `no_peaks`), the pairing,
+  the clocks and the hold are as good as ever and the encoder's proof of the fault stands:
+  A1 to A5 are NOT ASSESSED, the swing reads `FAIL (app fault: ...; A1 to A5 not assessed)`
+  and `APP*` FAILS (it counts every analysed swing, not only the assessed ones). Beside any
+  other gating flag (a suspect pairing, a hold that moved) the evidence for the fault is
+  itself in doubt, and nothing is concluded: `app_fault` is blank.
+- **One overall verdict per phone**, under the criteria and last on stdout: the worst line.
+  FAIL if any line fails; else UNRESOLVED; else INCOMPLETE (a line incomplete or not
+  assessable); else PASS. It names the lines responsible and the lines NOT EVALUATED (A6,
+  A8), which a PASS does not cover. It does not change the exit code (see "Run it").
 - **A criterion prints PASS only if every attempted swing was assessed and passed**, on a
-  pairing whose counts agreed. Each criterion line shows `assessed/total`.
+  pairing whose counts agreed and whose order was verified or stated. Each criterion line
+  shows `assessed/total`.
   - **FAIL**: one assessed swing fails, or the pooled figure does. A verdict that could
     not be reached on another swing does not hide it.
   - **INCOMPLETE**: the assessed swings pass, but some swing was not assessed or not
-    analysed, or the counts did not agree (`--allow-count-mismatch`).
+    analysed, or the counts did not agree (`--allow-count-mismatch`), or the manifest had
+    no timestamps and the pairing was not stated (`manifest_order_unverified`).
   - **UNRESOLVED**: as INCOMPLETE, but a swing was set aside for a reason behind which the
     phone or the app itself may be the fault (`pairing_suspect`,
     `release_not_where_xcorr_expects`, `phone_gap`, `phone_ends_before_settled`,
-    `zero_on_other_motion`). The missing swing is not neutral: it may be the failure. Find
+    `zero_on_other_motion`, `zero_encoder_cannot_tell`). The missing swing is not neutral: it may be the failure. Find
     out which before reading anything into the line.
   - **NOT ASSESSABLE**: nothing to judge (with `UNRESOLVED` appended when the above applies).
 - **Every criterion line names the comparison it used** ("Judged on").
@@ -235,13 +289,22 @@ for what the fixture, the operator or the log did; what the device under test di
 | `phone_gap` | Phone or app (the export lost samples), but the comparison cannot be trusted across the gap | Not assessed; **UNRESOLVED** |
 | `not_settled` | Fixture/protocol: the arm did not settle inside the window (or a `60s` row) | Not assessed |
 | `phone_ends_before_settled` | Operator (stopped the phone early) or app (auto-stop mid-swing): cannot be told | Not assessed; **UNRESOLVED** |
-| `zero_not_at_release` + `zero_misplaced_by_app` | **App**: its zero pose is more than 0.5 s from the release and the encoder shows nothing there to zero on (the arm did not reach 0.8 rad/s), or the zero came after a release the fixture did deliver | **Judged: FAIL** (`APP*`); `Z*` judges the pose itself |
-| `zero_not_at_release` + `zero_on_other_motion` | Operator, and not cleared of the app: the zero is before the release, where the encoder shows a real departure at 0.8 rad/s or more (a brisk lift, a bump). The app zeroed on motion it was given; it also kept that zero through the hold that followed | Not assessed; **UNRESOLVED** |
+| `zero_not_at_release` + `zero_misplaced_by_app` | **App**: its zero pose is more than 0.5 s from the release and the encoder shows nothing there to zero on (the arm did not reach 0.8 rad/s, read wide-band), or the zero came after a release the fixture did deliver | **Judged: FAIL** (`APP*`); `Z*` judges the pose itself |
+| `zero_not_at_release` + `zero_on_other_motion` | Operator, and not cleared of the app: the zero is before the release, where the encoder shows a real departure at 0.8 rad/s or more: a brisk lift, or a knock or bounce off the peg as short as 25 ms. The app zeroed on motion it was given; it also kept that zero through the hold that followed | Not assessed; **UNRESOLVED** |
+| `zero_not_at_release` + `zero_encoder_cannot_tell` | Cannot be told: the encoder's own wide-band noise in the still hold, times 5, reaches the 0.8 rad/s threshold, so it could neither show a knock nor rule one out | Not assessed; **UNRESOLVED** |
 | `zero_not_at_release` + `zero_before_encoder_log` | Operator: the encoder log started after the app's zero, so the encoder cannot say | Not assessed |
 | `zero_instant_approximate` | Analysis: the zero instant could not be read exactly from the replay | Not assessed |
 | `lag_pegged` | **App**: the clocks are aligned on the phone's own gyro, so an angle 300 ms or more from that gyro is the app's processing (on a swing with no pairing flag) | **Judged: FAIL** (`L*` and `APP*`) |
 | `no_peaks` | Fixture/encoder: no far-side peak above the floor on the encoder | Not assessed |
 | `manifest_order_unverified`, `radius_placeholder` | Log | Judged; flag printed |
+
+**How "the encoder shows a departure" is read.** The app fires on raw gyro samples
+reaching 1 rad/s, so the encoder is read wide-band for this one question: its mean rate
+over 10 ms from the unfiltered position (`encoder_peak_rate_at_zero_rad_s`), from 0.1 s
+before the app's zero to 0.5 s after it. The 8 Hz rate used to align the clocks is not
+used here: it smooths a 1.5 deg knock lasting 25 ms from about 2 rad/s to under 0.5, which
+is how the first version of this rule blamed the app for a knock the encoder had seen. The
+same rate's noise in the last still second of the hold is `encoder_wideband_noise_rad_s`.
 
 Two device faults are still **not** judged, and are the owner's to decide: a recording in
 which the replay takes no zero pose at all is "not analysed" (INCOMPLETE), although on a
@@ -279,8 +342,13 @@ The report prints them in the same table, marked `PROPOSED gating threshold`
 | `PAIRING_PEAK_RATE_RATIO` | 0.80 to 1.25 | phone/encoder first-swing peak speed outside this: `phone_rate_off` (judged) or `pairing_suspect` |
 | `PAIRING_RELEASE_ANGLE_TOL_DEG` | 8 deg | encoder release angle against the log's (`release_angle_mismatch`), and against the phone's static tilt (which of the two above) |
 | `ZERO_WINDOW_S` | -0.5 to +0.5 s | the app's zero pose outside this window of the release: `zero_not_at_release` |
-| `ZERO_REAL_DEPARTURE_FRAC` | 0.8 (of the app's 1 rad/s) | encoder rate at a misplaced zero: at or above, `zero_on_other_motion`; below, `zero_misplaced_by_app` (FAIL) |
+| `APP_RELEASE_RATE_RAD_S`, `ZERO_REAL_DEPARTURE_FRAC` | 1.0 rad/s (the app's own capture threshold, copied here), 0.8 | encoder wide-band rate at a misplaced zero: at or above 0.8 x 1.0 rad/s, `zero_on_other_motion`; below, `zero_misplaced_by_app` (FAIL) |
+| `ZERO_WIDEBAND_SPAN_S`, `ZERO_NOISE_SIGMAS` | 10 ms, 5 | the span that rate is a mean over; and how many times its noise in the still hold must stay under the threshold, else `zero_encoder_cannot_tell` |
+| `RELEASE_CANDIDATE_FRAC`, `RELEASE_STILL_S`, `RELEASE_TRAVEL_S` | 0.25, 0.5 s, 2 s | what counts as a release: a rise through a quarter of the top speed out of half a second of stillness, the last one with at least half the busiest candidate's travel in the next 2 s. Decides where the release, and so everything, is |
+| `RELEASE_NEAR_TOL_S` | 1.0 s | the phone's release further than this from where cross-correlation puts the encoder's: `release_not_where_xcorr_expects` |
 | `SETTLED_RATE_RAD_S`, `SETTLED_FOR_S` | 0.05 rad/s, 2 s | settled; otherwise `not_settled` |
+| `TAIL_AFTER_SETTLE_S` | 3 s | how long after settling the record is read (the rest window, the static tilt) |
+| `MIN_SWING_COVERED_S` | 2 s | less swing than this covered by both records: the swing is not analysed |
 | `LAG_SEARCH_S` | 0.30 s | a fitted lag on this bound: `lag_pegged` (FAIL); also the tail of the phone record that is not compared |
 | `CAPPED_SWING_WINDOW_S` | 50 s | how much of a `60s` row is read |
 | `PHONE_GAP_MAX_FACTOR` | 5 | a gyro interval over this many median intervals: `phone_gap` |
@@ -395,6 +463,14 @@ refused instead of ignored. `daq_tbd` is a placeholder that raises with these in
   is analysed and its zero-pose fall (3 to 6 deg) is reported and fails `Z*`, but a push, a
   snag or a bounce off the peg has not been simulated.
 - A pairing shifted between two repeats of the same angle and weight cannot be detected.
+- A wrong pair at the same angle across two weights is not detected either, and is worse:
+  it arrives as an ordinary unflagged FAIL on A3, A5 or the lag (38 of 60 synthetic swaps
+  in the second review; not re-run here), reading exactly like a faulty app. See "A wrong
+  pairing can look like an app failure" for the mitigation.
+- The knock rule has been tried on a synthetic 1.5 deg, 25 ms knock (there and back, and
+  one way), with encoder noise of 0 and 0.05 deg, at 1 kHz and 8000 counts per revolution.
+  A coarser or slower encoder has a higher wide-band noise floor and may land in
+  `zero_encoder_cannot_tell`; a knock of 50 ms did not make the synthetic app zero at all.
 - A `60s` row is read to 50 s and is never passed unless the arm settled before then; a
   lightly damped arm that needs longer cannot be validated by this script as it stands.
 - The fault rules ("Whose fault a flag is") have been exercised on synthetic faults only: a

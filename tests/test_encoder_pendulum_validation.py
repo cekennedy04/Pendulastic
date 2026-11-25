@@ -1087,10 +1087,10 @@ def test_a_zero_in_a_still_hold_is_still_the_apps_fault_on_a_noisy_encoder(plant
     assert row["app_fault"] == "zero_misplaced_by_app" and row["pass_all"] is False
 
 
-def test_an_encoder_too_noisy_to_see_a_knock_says_it_cannot_tell(base, monkeypatch):
+def test_an_encoder_too_noisy_to_see_a_knock_says_it_cannot_tell(planted, monkeypatch):
     monkeypatch.setattr(V, "ZERO_NOISE_SIGMAS", 1e6)                    # as if the noise swamped the threshold
     _altered_app(monkeypatch, lambda a: a.update(t_zero=a["t_zero"] - 4.0))
-    row = _again(base)
+    row = _again(planted)
     assert "zero_encoder_cannot_tell" in row["not_assessed_because"] and row["app_fault"] == ""
     assert "UNRESOLVED" in V._verdict(row)
 
