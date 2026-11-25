@@ -932,7 +932,7 @@ def test_the_thresholds_that_decide_whether_a_swing_is_judged_are_listed_as_prop
                  "PAIRING_RELEASE_ANGLE_TOL_DEG", "ZERO_WINDOW_S", "SETTLED_RATE_RAD_S", "SETTLED_FOR_S",
                  "LAG_SEARCH_S", "RELEASE_CANDIDATE_FRAC", "RELEASE_STILL_S", "RELEASE_TRAVEL_S",
                  "RELEASE_NEAR_TOL_S", "TAIL_AFTER_SETTLE_S", "MIN_SWING_COVERED_S", "APP_RELEASE_RATE_RAD_S",
-                 "ZERO_WIDEBAND_SPAN_S", "ZERO_NOISE_SIGMAS"):
+                 "ZERO_WIDEBAND_SPAN_S", "ZERO_NOISE_SIGMAS", "ZERO_LOOK_BEFORE_S", "ZERO_LOOK_AFTER_S"):
         assert name in V.GATING_THRESHOLD_NAMES and consts[name] == getattr(V, name)
     md = V.summary_markdown(session[2], [session[3]])
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1016,7 +1016,7 @@ def test_a_manifest_without_timestamps_is_paired_in_manifest_order_and_says_so(s
     assert all(r["pairing_order_unverified"] for r in rows)
     vs = {v["criterion"]: v for v in V.verdicts(rows)}
     assert not any(v["verdict"] == "PASS" for v in vs.values())
-    assert vs["A1"]["verdict"] == "INCOMPLETE" and "6/6 swings assessed" in vs["A1"]["value"]
+    assert vs["A1"]["verdict"].startswith("INCOMPLETE") and "6/6 swings assessed" in vs["A1"]["value"]
 
 
 def test_a_wrong_channel_count_is_refused_with_its_reason(base, tmp_path, capsys):
@@ -1131,9 +1131,14 @@ def test_a_session_without_manifest_timestamps_is_never_a_pass(session, tmp_path
     before = {v["criterion"]: v["verdict"] for v in V.verdicts(session[2])}
     after = {v["criterion"]: v["verdict"] for v in V.verdicts(rows)}
     assert "PASS" in before.values() and "PASS" not in after.values()
-    assert all(after[c] == "INCOMPLETE" for c, v in before.items() if v == "PASS")
-    assert all(after[c] == v for c, v in before.items() if v != "PASS")
-    assert not V.overall_verdict(V.verdicts(rows)).startswith("PASS")
+    assert all(after[c].startswith("INCOMPLETE") and "pairing unverified" in after[c]
+               for c, v in before.items() if v == "PASS")
+    # ... and a line that would have read FAIL is not a FAIL either (third review, F1)
+    assert "FAIL" in before.values() and not any(v.startswith("FAIL") for v in after.values())
+    assert all(after[c].startswith("UNRESOLVED") and "pairing unverified" in after[c]
+               for c, v in before.items() if v == "FAIL")
+    assert all(after[c] == v for c, v in before.items() if v.startswith("NOT EVALUATED"))
+    assert not V.overall_verdict(V.verdicts(rows)).startswith(("PASS", "FAIL"))
 
 
 def test_an_explicit_pairing_does_not_need_the_manifest_order(session, tmp_path):
@@ -1202,7 +1207,7 @@ def test_the_report_and_stdout_carry_one_overall_line_and_a_fail_still_exits_0(s
     assert overall.startswith("FAIL") and "Z*" in overall
     md = V.summary_markdown(rows, [sess])
     assert f"**Overall, iphone: {overall}**" in md
-    assert "| A1-A5 | App fault | Swing |" in md and "passes A1 to A5 and has no app fault" in md
+    assert "| A1-A5 | App fault | Swing (A1-A5 + app fault) |" in md and "passes A1 to A5 and has no app fault" in md
     assert "unflagged FAIL" in md                                        # the same-angle wrong pair, said plainly
     assert V.main(["session", folder, "--out", str(tmp_path / "rep")]) == 0
     out = capsys.readouterr().out
@@ -1230,3 +1235,318 @@ def test_a_session_json_or_manifest_that_is_not_json_is_refused(session, tmp_pat
     assert V.main(["session", folder]) == 2
     err = capsys.readouterr().err
     assert "REFUSED" in err and "manifest" in err
+
+
+# ───────────────────────── third review ─────────────────────────
+def _no_pass_no_fail(lines):
+    return not any(v["verdict"].startswith(("PASS", "FAIL")) for v in lines)
+
+
+def test_an_unverified_pairing_neither_passes_nor_fails(session, tmp_path):
+    """F1. No timestamps and two manifest entries listed the other way round (W0 and W2 at
+    40 deg): the swings are paired with each other's encoder files and A3/A5 'fail'. Nothing
+    verified that pairing, so nothing read off it is a FAIL any more than it is a PASS: the
+    lines and the overall verdict say UNRESOLVED or INCOMPLETE, and the overall line says why."""
+    folder = _copy_session(session[0], tmp_path / "s")
+
+    def no_stamps_two_swapped(man):
+        for t in man["trials"]:
+            t.pop("timestamp")
+        man["trials"][1], man["trials"][3] = man["trials"][3], man["trials"][1]
+
+    _edit_manifest(folder, no_stamps_two_swapped)
+    rows, sess = V.analyse_session(folder)
+    assert all(r.get("pairing_unverified") for r in rows)
+    lines = V.verdicts(rows)
+    assert _no_pass_no_fail(lines)
+    overall = V.overall_verdict(lines)
+    assert overall.startswith("UNRESOLVED") and "pairing unverified" in overall
+    md = V.summary_markdown(rows, [sess])
+    assert f"**Overall, iphone: {overall}**" in md
+    # the swing's own cells do not read as a bare pass or FAIL either
+    assert all("pairing unverified" in V._verdict(r) and "pairing unverified" in V._verdict_a15(r) for r in rows)
+    # the same session, correctly ordered but still unverified: its Z* and A5 failures are not FAILs
+    same = [dict(r, pairing_order_unverified=True) for r in session[2]]
+    assert V.overall_verdict(V.verdicts(session[2])).startswith("FAIL")
+    assert _no_pass_no_fail(V.verdicts(same))
+    assert "pairing unverified" in V.overall_verdict(V.verdicts(same))
+    # ... and one that would have passed everything reads INCOMPLETE, with the reason
+    clean = [dict(r, pass_zero_fall=True, pass_A5_tau=True, pass_A5_n=True, pass_A5_f=True, pass_A1_A5=True,
+                  pass_all=True, pairing_order_unverified=True) for r in session[2]]
+    o = V.overall_verdict(V.verdicts(clean))
+    assert o.startswith("INCOMPLETE") and "pairing unverified" in o
+
+
+def test_a_count_mismatch_between_log_and_phone_trials_neither_passes_nor_fails(session, tmp_path):
+    """F1. One exported phone trial missing, counts allowed to differ: where the lists
+    diverge is not known, so every pairing is unverified."""
+    folder = _copy_session(session[0], tmp_path / "s")
+    _edit_manifest(folder, lambda man: man["trials"].pop(2))
+    rows, sess = V.analyse_session(folder, allow_count_mismatch=True)
+    paired = [r for r in rows if "error" not in r]
+    assert len(paired) == 5 and all(r.get("pairing_unverified") for r in paired)
+    lines = V.verdicts(rows)
+    assert _no_pass_no_fail(lines)
+    assert "pairing unverified" in V.overall_verdict(lines)
+
+
+def _made(tmp, name, change_encoder=None, **kw):
+    """A 40 deg trial with the reviewer's encoder (0.02 deg noise), optionally with the
+    encoder log altered before it is written."""
+    tr = S.synthesize(40.0, name=name, encoder=S.EncoderErrors(noise_deg=0.02), **kw)
+    if change_encoder:
+        tr.enc_deg = change_encoder(tr, tr.enc_deg.copy())
+    phone = S.write(tr, str(tmp), str(tmp / f"{name}.bin"))
+    return tr, phone, str(tmp / f"{name}.bin"), V.analyse_trial(phone, str(tmp / f"{name}.bin"), radius_m=0.30,
+                                                                encoder_opts=ENC)
+
+
+def test_a_zero_on_motion_only_the_phone_saw_is_not_called_an_app_fault(tmp_path):
+    """F2. The app zeroes when its gyro reaches 1 rad/s. If the phone's own raw gyro did
+    reach that at the zero, the app did what it is built to do, whatever the encoder shows:
+    (a) a real knock too short for the encoder's 10 ms mean rate (0.3 deg in 5 ms each way
+    reads 0.42 rad/s there); (b) the arm still and the phone alone moving (loose in its
+    clamp) or its gyro glitching for one sample. Neither is the app's logic; neither is
+    cleared. UNRESOLVED, under its own flag."""
+    tr, _, _, knock = _made(tmp_path, "short", knock_deg=0.3, knock_s=0.005, seed=0)
+    assert abs(knock["app_zero_phone_s"] - tr.truth["knock_t_phone_s"]) < 0.06     # the app did zero on it
+    assert knock["encoder_peak_rate_at_zero_rad_s"] < V.ZERO_REAL_DEPARTURE_FRAC * V.APP_RELEASE_RATE_RAD_S
+    for peak, n in ((1.05, 1), (1.5, 1), (3.0, 2)):
+        tr, _, _, blip = _made(tmp_path, f"blip{peak}", gyro_blip_rad_s=peak, gyro_blip_n=n)
+        assert abs(blip["app_zero_phone_s"] - tr.truth["gyro_blip_t_phone_s"]) < 0.06
+        for row in (knock, blip):
+            assert row["phone_gyro_peak_at_zero_rad_s"] >= V.ZERO_REAL_DEPARTURE_FRAC * V.APP_RELEASE_RATE_RAD_S
+            assert "zero_on_phone_only_motion" in row["flags"] and "zero_misplaced_by_app" not in row["flags"]
+            assert row["app_fault"] == "" and row["pass_no_app_fault"] is not False
+            assert "zero_on_phone_only_motion" in row["not_assessed_because"]
+            assert V.is_unresolved(row) and "UNRESOLVED" in V._verdict(row)
+    assert "zero_on_phone_only_motion" in V.GATING_FLAGS and "zero_on_phone_only_motion" in V.PHONE_MAY_BE_AT_FAULT_FLAGS
+
+
+def test_an_app_fault_is_a_zero_that_neither_the_encoder_nor_the_gyro_explains(base, monkeypatch):
+    """F2. The fault that remains: the zero moved 3 s into a hold where the phone's gyro and
+    the encoder both show nothing."""
+    _altered_app(monkeypatch, lambda a: a.update(t_zero=a["t_zero"] - 3.0))
+    row = _again(base)
+    assert row["phone_gyro_peak_at_zero_rad_s"] < 0.5 * V.APP_RELEASE_RATE_RAD_S
+    assert row["app_fault"] == "zero_misplaced_by_app" and row["pass_all"] is False
+
+
+@pytest.mark.parametrize("extra, kept", [("release_angle_not_checked", True), ("not_settled", True),
+                                         ("release_angle_mismatch", False), ("hold_not_still", False),
+                                         ("zero_instant_approximate", False), ("phone_gap", False),
+                                         ("pairing_suspect", False)])
+def test_a_suspected_app_fault_never_reads_as_none(session, extra, kept):
+    """F3. An app fault beside a gating flag. A missing log entry (release_angle_not_checked)
+    or a swing not covered to its end is no evidence against the fault: it stands and FAILS.
+    Beside a flag that does undermine it, it is not concluded, and it is not dropped either:
+    the swing says 'suspected', and the swing and the session read UNRESOLVED, not INCOMPLETE."""
+    rows = [dict(r) for r in session[2]]
+    for r in rows:
+        r["flags"] = f"zero_not_at_release;zero_misplaced_by_app;{extra}"
+        r.update(V.judge_trial(r))
+    r = rows[0]
+    vs = {v["criterion"]: v for v in V.verdicts(rows)}
+    overall = V.overall_verdict(V.verdicts(rows))
+    md = V.summary_markdown(rows, [session[3]])
+    if kept:
+        assert r["app_fault"] == "zero_misplaced_by_app" and r["pass_no_app_fault"] is False
+        assert V._verdict(r).startswith("FAIL (app fault: zero_misplaced_by_app")
+        assert vs["APP*"]["verdict"] == "FAIL" and overall.startswith("FAIL (APP*")
+    else:
+        assert r["app_fault"] == "" and r["app_fault_suspected"] == "zero_misplaced_by_app"
+        assert r["pass_no_app_fault"] is None
+        assert V.is_unresolved(r) and "UNRESOLVED" in V._verdict(r) and "suspected" in V._verdict(r)
+        assert "UNRESOLVED" in vs["APP*"]["verdict"] and "suspected" in vs["APP*"]["value"]
+        assert overall.startswith("UNRESOLVED")
+        assert f"| suspected, not concluded (zero_misplaced_by_app) |" in md
+    assert V.judge_trial(dict(session[2][0]))["app_fault_suspected"] == ""
+
+
+def test_a_session_whose_rig_log_has_no_release_angles_still_reports_an_app_fault(session, tmp_path, monkeypatch):
+    """F3, end to end: no release angle in the log or the trial IDs. A1 to A5 are not
+    assessed on any swing; the app fault is still reported and the session FAILS on APP*."""
+    folder = _copy_session(session[0], tmp_path / "s")
+
+    def no_angles(cols, rows):
+        for i, r in enumerate(rows):
+            r["release_angle_deg"], r["trial_id"] = "", f"swing {i + 1}"
+
+    _edit_log(folder, no_angles)
+    _altered_app(monkeypatch, lambda a: a.update(t_zero=a["t_zero"] - 3.0))
+    rows, _ = V.analyse_session(folder)
+    assert all("release_angle_not_checked" in r["not_assessed_because"] for r in rows)
+    assert all(r["app_fault"] == "zero_misplaced_by_app" for r in rows)
+    assert V.overall_verdict(V.verdicts(rows)).startswith("FAIL (APP*")
+
+
+def test_encoder_motion_after_the_zero_does_not_explain_it(tmp_path, monkeypatch):
+    """F4. The app's zero is moved 3 s into a still hold (gyro quiet: an app fault). What the
+    encoder shows AFTER the zero cannot have caused it: a 0.4 deg ring of the arm 0.3 s later,
+    or a one-sample 3 deg electrical glitch 0.2 s later, used to excuse the app. And a
+    one-sample glitch is not motion of the arm even when it falls right on the zero."""
+    def ring(after_s):
+        def f(tr, e):
+            t = np.arange(len(e)) / 1000.0 - (tr.truth["release_t_encoder_s"] - 3.0 + after_s)
+            return e + np.where(t > 0, 0.4 * np.exp(-np.clip(t, 0, None) / 0.1) * np.sin(2 * np.pi * 30 * t), 0.0)
+        return f
+
+    def spike(after_s):
+        def f(tr, e):
+            e[int(round((tr.truth["release_t_encoder_s"] - 3.0 + after_s) * 1000))] += 3.0
+            return e
+        return f
+
+    _altered_app(monkeypatch, lambda a: a.update(t_zero=a["t_zero"] - 3.0))
+    for name, change in (("ring", ring(0.35)), ("spike", spike(0.25)), ("spike_on_zero", spike(0.05))):
+        tr, _, _, row = _made(tmp_path, name, change_encoder=change)
+        assert abs(row["zero_after_release_ms"] + 3000.0) < 150.0, name
+        assert "zero_on_other_motion" not in row["flags"], name
+        assert row["app_fault"] == "zero_misplaced_by_app", name
+    assert 0.0 < V.ZERO_LOOK_AFTER_S <= 0.06 and V.ZERO_LOOK_BEFORE_S > 0.0
+    for name in ("ZERO_LOOK_BEFORE_S", "ZERO_LOOK_AFTER_S"):
+        assert name in V.GATING_THRESHOLD_NAMES
+
+
+def test_a_malformed_rig_log_is_refused_or_read_and_never_a_traceback(session, tmp_path, capsys):
+    """F5. Saved from Excel as ANSI with a degree sign in the notes: read as cp1252, and said
+    so. An unquoted comma in the notes gives a row more fields than the header: refused."""
+    ansi = _copy_session(session[0], tmp_path / "ansi")
+    log = os.path.join(ansi, "rig_log.csv")
+    with open(log, "rb") as fh:
+        raw = fh.read()
+    with open(log, "wb") as fh:
+        fh.write(raw.replace(b"SYNTHETIC", b"40\xb0 ok", 1))
+    S_ = V.load_session(ansi)
+    assert "cp1252" in S_["log_note"] and S_["log"][0]["notes"] == "40° ok"
+    assert "cp1252" in capsys.readouterr().err
+    assert "cp1252" in V.summary_markdown(session[2], [dict(session[3], log_note=S_["log_note"])])
+    comma = _copy_session(session[0], tmp_path / "comma")
+    log = os.path.join(comma, "rig_log.csv")
+    with open(log, encoding="utf-8") as fh:
+        text = fh.read()
+    with open(log, "w", encoding="utf-8") as fh:
+        fh.write(text.replace("SYNTHETIC", "bumped, redo", 1))
+    with pytest.raises(V.ValidationError, match="more fields than the header"):
+        V.load_session(comma)
+    assert V.main(["session", comma]) == 2
+    err = capsys.readouterr().err
+    assert "REFUSED" in err and "rig_log.csv" in err and "Traceback" not in err
+
+
+@pytest.mark.parametrize("case", ["all_zero", "all_nan", "one_nan", "duplicate"])
+def test_timestamps_that_cannot_order_the_session_do_not_verify_it(session, tmp_path, case):
+    """F6. A timestamp being a number is not an order: all zero, NaN, or two trials sharing
+    one. The session is paired in manifest order, unverified, exactly as with none at all."""
+    folder = _copy_session(session[0], tmp_path / "s")
+
+    def change(man):
+        tr = man["trials"]
+        if case == "all_zero":
+            for t in tr:
+                t["timestamp"] = 0
+            tr.reverse()
+        elif case == "all_nan":
+            for t in tr:
+                t["timestamp"] = float("nan")
+            tr.reverse()
+        elif case == "one_nan":
+            tr[2]["timestamp"] = float("nan")
+        else:
+            tr[1]["timestamp"] = tr[0]["timestamp"]
+            tr[0], tr[1] = tr[1], tr[0]
+
+    _edit_manifest(folder, change)
+    S_ = V.load_session(folder)
+    assert "order_note" in S_ and S_["pairing_by"].startswith("manifest order")
+    assert "UNVERIFIED" in S_["pairing_by"]
+
+
+def test_a_stated_pairing_is_whole_and_consistent_or_refused(session, tmp_path):
+    """F6. A trial_id on some manifest trials and not others, a phone_file on some rows and
+    not others, one export named twice, and a phone_file column that contradicts the
+    manifest's trial_ids: each is refused, not resolved by guessing."""
+    ids = list(session[1])
+    files = [os.path.basename(p["_path"]) for p in session[3]["phones"]]
+
+    def all_ids(man):
+        for t, tid in zip(man["trials"], ids):
+            t["trial_id"] = tid
+
+    def name_files(cols, rows):
+        for r, f in zip(rows, files):
+            r["phone_file"] = f
+        return cols + ["phone_file"], rows
+
+    part = _copy_session(session[0], tmp_path / "part")
+    _edit_manifest(part, lambda man: (all_ids(man), man["trials"][5].pop("trial_id")))
+    with pytest.raises(V.ValidationError, match="trial_id.*some"):
+        V.load_session(part)
+
+    some = _copy_session(session[0], tmp_path / "some")
+    _edit_log(some, name_files)
+    _edit_log(some, lambda cols, rows: rows[1].update(phone_file=""))
+    with pytest.raises(V.ValidationError, match="filled on some rows"):
+        V.load_session(some)
+
+    twice = _copy_session(session[0], tmp_path / "twice")
+    _edit_log(twice, name_files)
+    _edit_log(twice, lambda cols, rows: rows[1].update(phone_file=files[0]))
+    with pytest.raises(V.ValidationError, match="not one-to-one"):
+        V.load_session(twice)
+
+    both = _copy_session(session[0], tmp_path / "both")
+    _edit_log(both, name_files)
+    _edit_manifest(both, all_ids)
+    assert V.load_session(both)["pairing_by"].startswith("phone_file")          # they agree: fine, and said
+    assert "trial_id" in V.load_session(both)["pairing_by"]
+
+    def swapped_ids(man):
+        all_ids(man)
+        man["trials"][0]["trial_id"], man["trials"][2]["trial_id"] = ids[2], ids[0]
+
+    _edit_manifest(both, swapped_ids)
+    with pytest.raises(V.ValidationError, match="contradict"):
+        V.load_session(both)
+
+
+def test_a_consistent_encoder_scale_error_is_noted_beside_the_fail(tmp_path):
+    """F7. An encoder scaled x1.05 (a wrong counts-per-revolution) reads as an A3 FAIL on
+    every swing. The phone's static tilt, which owes nothing to the encoder, is 5% smaller
+    than the encoder's release angle at every angle: the report notes it. It gates nothing."""
+    folder = str(tmp_path / "scaled")
+    S.write_session(folder, conditions=("W2",), angles=(20, 40, 60), encoder_errors=S.EncoderErrors(noise_deg=0.02, scale=1.05))
+    rows, sess = V.analyse_session(folder)
+    assert all(r["pass_A3_gain"] is False and r["flags"] == "" for r in rows)
+    note = V.encoder_scale_note(rows)
+    assert note and "5" in note and "encoder" in note
+    assert note in V.summary_markdown(rows, [sess])
+
+
+def test_no_encoder_scale_note_on_a_session_without_one(session):
+    assert V.encoder_scale_note(session[2]) is None
+
+
+def test_an_encoder_too_coarse_for_the_zero_rule_is_warned_about(session, tmp_path, capsys):
+    """F8. One count per ZERO_WIDEBAND_SPAN_S must read under the departure threshold, or a
+    single count of flicker is a 'knock': about 785 counts per revolution at 10 ms."""
+    assert 780 < V.zero_rule_min_counts_per_rev() < 790
+    folder = _copy_session(session[0], tmp_path / "s")
+    sj = os.path.join(folder, "session.json")
+    with open(sj, encoding="utf-8") as fh:
+        info = json.load(fh)
+    info["encoder"]["counts_per_rev"] = 720
+    with open(sj, "w", encoding="utf-8") as fh:
+        json.dump(info, fh)
+    S_ = V.load_session(folder)
+    assert "720" in S_["encoder_note"] and "zero" in S_["encoder_note"]
+    assert "WARNING" in capsys.readouterr().err
+    assert S_["encoder_note"] in V.summary_markdown(session[2], [dict(session[3], encoder_note=S_["encoder_note"])])
+    assert "encoder_note" not in session[3]
+
+
+def test_the_swing_column_says_what_it_does_not_cover(session):
+    """F9. Every swing can read 'pass' under an overall FAIL on Z*: the column says so."""
+    md = V.summary_markdown(session[2], [session[3]])
+    assert "| A1-A5 | App fault | Swing (A1-A5 + app fault) | Flags |" in md
+    assert "Z*, L* and A9* are not part of it" in md

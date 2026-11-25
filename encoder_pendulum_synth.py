@@ -108,13 +108,19 @@ def swing(release_deg, l_eq_m=0.37, zeta=0.03, duration_s=60.0, settle_deg=0.05)
 def synthesize(release_deg=40.0, *, name="trial", phone=None, radius_m=0.30, l_eq_m=0.37,
                zeta=0.03, gyro_scale=1.0, encoder: EncoderErrors | None = None, seed=0,
                rest_s=1.5, hold_s=5.0, tail_s=7.0, max_swing_s=60.0, end_tap=False,
-               knock_deg=0.0, knock_s=0.025, knock_back=True, knock_after_s=2.5) -> FixtureTrial:
+               knock_deg=0.0, knock_s=0.025, knock_back=True, knock_after_s=2.5,
+               gyro_blip_rad_s=0.0, gyro_blip_before_s=3.0, gyro_blip_n=1) -> FixtureTrial:
     """One whole fixture trial and its encoder log. `phone` is a
     `neuromech.phone_trial.Phone` (its `lever_m` is ignored: `radius_m` is the lever).
 
     `knock_deg` plants a knock or a bounce off the peg in the hold: after `knock_after_s`
     of still hold the arm drops `knock_deg` in `knock_s` and (with `knock_back`) returns as
-    fast; the `hold_s` hold and the release follow from wherever that leaves it."""
+    fast; the `hold_s` hold and the release follow from wherever that leaves it.
+
+    `gyro_blip_rad_s` plants motion ONLY THE PHONE saw: `gyro_blip_n` consecutive gyro
+    samples, `gyro_blip_before_s` before the release, read that much more about the swing
+    axis while the arm (and so the encoder) stays still. A phone shifting in its clamp, or
+    a glitch of the sensor."""
     from neuromech import phone_trial as PT          # slow import; only when synthesising
 
     phone = phone or PT.Phone()
@@ -167,6 +173,11 @@ def synthesize(release_deg=40.0, *, name="trial", phone=None, radius_m=0.30, l_e
         + rng.normal(0, 1, (len(ts), 3)) * phone.gyro_noise
     accel = at(f) @ M.T + np.asarray(phone.accel_offset, float) \
         + rng.normal(0, 1, (len(ts), 3)) * phone.accel_noise
+    t_blip = None
+    if gyro_blip_rad_s:
+        i = int(np.searchsorted(ts, t_rel - gyro_blip_before_s))
+        gyro[i:i + int(gyro_blip_n)] += np.array([gyro_blip_rad_s, 0.0, 0.0]) @ M.T
+        t_blip = float(ts[i])
 
     # The encoder: its own clock, starting `start_s` after the phone's first sample.
     te = np.arange(0.0, t[-1] - enc.start_s, 1.0 / FS_SIM)
@@ -180,6 +191,7 @@ def synthesize(release_deg=40.0, *, name="trial", phone=None, radius_m=0.30, l_e
     truth = {
         "name": name, "release_deg": float(level), "release_t_phone_s": float(t_rel),
         "knock_t_phone_s": t_knock, "knock_deg": float(knock_deg),
+        "gyro_blip_t_phone_s": t_blip, "gyro_blip_rad_s": float(gyro_blip_rad_s),
         "release_t_encoder_s": float(t_rel - enc.start_s), "clock_offset_s": float(enc.start_s),
         "radius_m": float(radius_m), "l_eq_m": float(l_eq_m), "zeta": float(zeta),
         "f_small_angle_hz": wn * math.sqrt(1 - zeta ** 2) / (2 * math.pi),
