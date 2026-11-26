@@ -683,7 +683,9 @@ def test_a_count_mismatch_stops_the_session(session, tmp_path):
     assert "unpaired" in rows[6]["error"] and rows[6]["encoder_file"].endswith("_006.bin")    # and so is its encoder file
     vs = {v["criterion"]: v for v in V.verdicts(rows)}
     assert not any(v["verdict"] == "PASS" for v in vs.values())
-    assert vs["A1"]["verdict"] == "INCOMPLETE" and "5/7 swings assessed, 2 of them unpaired leftovers" in vs["A1"]["value"]
+    assert not any(v["verdict"].startswith("FAIL") for v in vs.values())     # nor a FAIL: the pairing is unverified
+    assert vs["A1"]["verdict"] == "INCOMPLETE (pairing unverified)"
+    assert "5/7 swings assessed, 2 of them unpaired leftovers" in vs["A1"]["value"]
     md = V.summary_markdown(rows, [sess])
     assert "unpaired" in md and rows[5]["phone_file"] in md
 
