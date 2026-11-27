@@ -391,8 +391,9 @@ is gitignored. Nothing in it is committed.
 ## After the session
 
 - [ ] Count check: rig-log rows without `ERROR` = exported phone trials = encoder files.
-- [ ] Run the analyser (`pendulum_fixture_report.py`, see the plan, section 11). Read its
-      Pairing section first: it must not report a count mismatch.
+- [ ] Run the analyser: `python encoder_pendulum_validation.py session <session folder> --plots`
+      (`FREE_PENDULUM_ENCODER_ANALYSIS.md` has the checklist of what it needs). Read its
+      Pairing line first: it must not report a count mismatch.
 - [ ] The report states pass or fail for criteria A1 to A9 of the plan. Those limits are
       **PROPOSED - pending supervisor confirmation before session S1**. Once confirmed, do not
       change a limit or drop a swing because of what the report shows.
