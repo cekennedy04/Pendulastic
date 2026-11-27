@@ -75,12 +75,13 @@ terms, the fraction of the swing spent under the gate, and L_eq from the measure
 frequency are reported per trial so a radius dependence can be read off session S5.
 
 A swing with a quality flag (GATING_FLAGS) is reported in full but is not passed.
-Those flags are for what the fixture, the operator or the log got wrong, with the encoder
-as the witness of what the arm did. What the phone or the app got wrong is judged, not set
-aside: a grossly wrong gyro on a pair its static tilt corroborates fails A3, and an app
-fault (APP_FAULT_FLAGS) fails the swing. Where the two cannot be told apart
-(PHONE_MAY_BE_AT_FAULT_FLAGS) the session reads UNRESOLVED, not INCOMPLETE. The rules and
-the thresholds behind them (GATING_THRESHOLD_NAMES) are PROPOSED, like the limits.
+Where the reason may be the phone or the app itself and the data cannot say
+(PHONE_MAY_BE_AT_FAULT_FLAGS) the session reads UNRESOLVED, not INCOMPLETE. This script
+does NOT say whose fault such a swing is: attributing a misplaced zero or a pegged lag to
+the app was removed until real bench data exists (see "Deferred until bench data" in the
+analysis doc). What the phone demonstrably got wrong on a corroborated pair is still
+judged by the criteria (a grossly wrong gyro fails A3). The rules and the thresholds behind
+them (GATING_THRESHOLD_NAMES) are PROPOSED, like the limits.
 The acceptance limits are the plan's section 8 plus three that are not in the plan
 (marked). Every one is PROVISIONAL.
 """
@@ -175,84 +176,62 @@ PAIRING_PEAK_RATE_RATIO = (0.80, 1.25)   # phone/encoder first-swing peak speed 
 PAIRING_RELEASE_ANGLE_TOL_DEG = 8.0      # encoder release angle against the rig log's nominal one
 PHONE_RADIUS_PLACEHOLDER_M = 0.30
 APP_ACCEL_GATE_RAD_S = 0.3       # pendulastic_imu_server.ACCEL_CORRECTION_GYRO_MAX_RAD_S
-APP_RELEASE_RATE_RAD_S = 1.0     # pendulastic_imu_server._FLEX_CAPTURE_THRESHOLD: the app zeroes on this departure
-ZERO_REAL_DEPARTURE_FRAC = 0.8   # a zero pose away from the release is the fixture's if the ENCODER reaches this
-#                                  fraction of the app's release rate there (a brisk lift, a bump); else the app's
-ZERO_WIDEBAND_SPAN_S = 0.010     # ... read WIDE-BAND: the encoder's mean rate over this span, from the unfiltered
-#                                  position. The app zeroes on raw gyro samples, so a 25 ms knock must not be
-#                                  judged on the 8 Hz rate, which smooths it to a fraction of what the gyro saw
-ZERO_NOISE_SIGMAS = 5.0          # that rate's noise in the still hold, times this, must stay under the threshold,
-#                                  or the encoder cannot tell a knock from nothing (zero_encoder_cannot_tell)
-ZERO_LOOK_BEFORE_S = 0.10        # motion that could have caused the app's zero is looked for from this long before it ...
-ZERO_LOOK_AFTER_S = 0.05         # ... to this long after: two phone samples at 60 Hz (the zero is the last sample
-#                                  BEFORE the capturing one) plus the 20 ms sync tolerance. Nothing later can cause it
 ENCODER_SCALE_NOTE_FRAC = 0.03   # the encoder's release angle against the phone's static tilt, session median:
 #                                  further than this from 1, on every swing alike, is noted (it gates nothing)
 PHONE_GAP_MAX_FACTOR = 5.0       # a gyro interval longer than this many median intervals is a gap
 ENCODER_MAX_PLAUSIBLE_DEG_S = 2000.0   # no hand-released arm moves faster (the gyro check's 35 rad/s) ...
 ENCODER_JUMP_MIN_DEG = 2.0             # ... and a step under this is quantisation, not a jump
 ENCODER_MAX_JUMP_FRACTION = 0.001      # more of the log than this in jumps: not an encoder position at all
+# session.json describes the encoder log; the file cannot say whether it is right. Two things it gets wrong
+# show on EVERY swing alike, and the session is then refused instead of being read as anything about the app:
+ENCODER_PERIOD_RATIO_OK = (0.80, 1.25)   # encoder swing period / phone swing period: outside, a wrong sample_rate_hz
+ENCODER_ANGLE_RATIO_OK = (0.40, 2.50)    # encoder release angle / rig log's: outside, wrong position_units or counts
+AXIS_TOP_PERCENTILE = 99.0       # "the fastest rotation" for finding the swing axis: this percentile of the gyro
+#                                  magnitude, not its maximum, which a knuckle tap at the end can own
 
-#: Analysis settings that decide WHETHER a swing is judged (a gating flag, an app fault, a
+#: Analysis settings that decide WHETHER a swing is judged (a gating flag, a
 #: refusal) rather than how it scores. They are choices like the limits are, and are listed
 #: with them (provisional_constants) as PROPOSED gating thresholds.
 GATING_THRESHOLD_NAMES = ("HOLD_STILL_MAX_RAD_S", "PAIRING_MIN_XCORR", "PAIRING_PEAK_RATE_RATIO",
-                          "PAIRING_RELEASE_ANGLE_TOL_DEG", "ZERO_WINDOW_S", "APP_RELEASE_RATE_RAD_S",
-                          "ZERO_REAL_DEPARTURE_FRAC", "ZERO_WIDEBAND_SPAN_S", "ZERO_NOISE_SIGMAS",
-                          "ZERO_LOOK_BEFORE_S", "ZERO_LOOK_AFTER_S",
+                          "PAIRING_RELEASE_ANGLE_TOL_DEG", "ZERO_WINDOW_S",
                           "RELEASE_CANDIDATE_FRAC", "RELEASE_STILL_S", "RELEASE_TRAVEL_S", "RELEASE_NEAR_TOL_S",
                           "SETTLED_RATE_RAD_S", "SETTLED_FOR_S", "TAIL_AFTER_SETTLE_S", "MIN_SWING_COVERED_S",
                           "LAG_SEARCH_S", "CAPPED_SWING_WINDOW_S",
                           "PHONE_GAP_MAX_FACTOR", "PEAK_FLOOR_FRAC", "PEAK_FLOOR_DEG",
-                          "ENCODER_MAX_PLAUSIBLE_DEG_S", "ENCODER_JUMP_MIN_DEG", "ENCODER_MAX_JUMP_FRACTION")
+                          "ENCODER_MAX_PLAUSIBLE_DEG_S", "ENCODER_JUMP_MIN_DEG", "ENCODER_MAX_JUMP_FRACTION",
+                          "ENCODER_PERIOD_RATIO_OK", "ENCODER_ANGLE_RATIO_OK")
 
-#: A swing carrying any of these is reported but not passed: its verdicts are "not assessed".
-#: Only what the FIXTURE, the operator, the log or this analysis got wrong belongs here, or
-#: what cannot be told apart from that (PHONE_MAY_BE_AT_FAULT_FLAGS). What the app or the
-#: phone demonstrably got wrong is judged (APP_FAULT_FLAGS and the criteria themselves).
+#: A swing carrying any of these is reported in full but not passed: NOT ASSESSED.
 GATING_FLAGS = ("hold_not_still", "phone_gap", "pairing_suspect", "release_angle_mismatch",
-                "release_angle_not_checked", "release_not_where_xcorr_expects", "not_settled",
-                "phone_ends_before_settled", "zero_instant_approximate", "zero_on_other_motion",
-                "zero_on_phone_only_motion", "zero_before_encoder_log", "zero_encoder_cannot_tell", "no_peaks")
-#: Gating flags behind which the phone or the app itself may be the fault, and the data
-#: cannot say. A session with such a swing does not read INCOMPLETE: it reads UNRESOLVED.
-PHONE_MAY_BE_AT_FAULT_FLAGS = ("pairing_suspect", "release_not_where_xcorr_expects", "phone_gap",
-                               "phone_ends_before_settled", "zero_on_other_motion", "zero_on_phone_only_motion",
-                               "zero_encoder_cannot_tell")
-#: The app got this wrong on a swing the fixture delivered properly. Judged: the swing FAILS.
-#: zero_misplaced_by_app is a zero that NEITHER the encoder NOR the phone's own raw gyro
-#: explains (or one taken after a release the fixture did deliver).
-APP_FAULT_FLAGS = ("zero_misplaced_by_app", "lag_pegged")
-#: Gating flags that say only that the swing is not covered to its end. They leave the
-#: pairing, the clocks and the hold as they were, so an app fault stands beside them.
-COVERAGE_ONLY_FLAGS = ("not_settled", "phone_ends_before_settled", "no_peaks")
-#: Gating flags beside which an app fault STANDS: A1 to A5 are not assessed, the fault still
-#: FAILS. The coverage flags, and release_angle_not_checked, which is a missing entry in the
-#: log and no evidence against the pair. Beside any OTHER gating flag the fault's own evidence
-#: is in doubt, flag by flag:
-#:   pairing_suspect, release_angle_mismatch, release_not_where_xcorr_expects
-#:       the encoder file may be another swing's, or the clocks are not aligned: what the
-#:       encoder showed "at the zero" may be from elsewhere
-#:   hold_not_still     the arm was moving before the release, so where the release is, and
-#:                      whether the zero is away from it, is not settled
-#:   phone_gap          the gyro samples that could explain the zero may be the missing ones
-#:   zero_instant_approximate   the zero instant itself is not known
-#:   zero_on_other_motion, zero_on_phone_only_motion, zero_before_encoder_log, zero_encoder_cannot_tell
-#:       the zero is known to be elsewhere for a reason not the app's, or cannot be read: a lag
-#:       measured from that zero says nothing about the app
-#: There the fault is not concluded and not dropped: `app_fault_suspected`, UNRESOLVED.
-APP_FAULT_STANDS_BESIDE = COVERAGE_ONLY_FLAGS + ("release_angle_not_checked",)
+                "release_angle_not_checked", "release_not_where_xcorr_expects", "clock_alignments_disagree",
+                "not_settled", "phone_ends_before_settled", "zero_instant_approximate", "zero_not_at_release",
+                "lag_pegged", "no_peaks")
+#: Gating flags behind which the phone or the app itself may be the reason, and the data
+#: cannot say. Such a swing is UNRESOLVED, and so is every session line it is missing from:
+#: the missing swing may be the failure. NO CAUSE IS ATTRIBUTED:
+#:   zero_not_at_release        the app took its zero pose more than ZERO_WINDOW_S from the
+#:                              release. The app, a phone moving in its clamp, a knock on the
+#:                              arm, or a wrong pairing: not determined.
+#:   lag_pegged                 no lag within LAG_SEARCH_S fits: "not a lag". The app's
+#:                              processing, a wrong pair or misaligned clocks: not determined.
+#:   clock_alignments_disagree  the release and the cross-correlation put the clocks more than
+#:                              PROVISIONAL_SYNC_DISAGREE_S apart, so the offset is not known
+#:                              and nothing compared across it means anything.
+PHONE_MAY_BE_AT_FAULT_FLAGS = ("pairing_suspect", "release_not_where_xcorr_expects", "clock_alignments_disagree",
+                               "phone_gap", "phone_ends_before_settled", "zero_not_at_release", "lag_pegged")
 #: Reported beside a judged swing; they change no verdict by themselves:
 #:   phone_rate_off                   peak speed outside PAIRING_PEAK_RATE_RATIO on a pair the phone's static
 #:                                    tilt corroborates: the phone is wrong, and A3 says by how much
 #:   phone_hold_not_still             the phone's gyro is restless in a hold the encoder shows still
 #:   phone_tilt_differs_from_encoder  the phone's static tilt change is not the encoder's release angle
-#:   zero_not_at_release              always with zero_misplaced_by_app / zero_on_other_motion / zero_before_encoder_log
 #:   manifest_order_unverified, radius_placeholder
-
 
 class ValidationError(RuntimeError):
     """Anything that makes a result untrustworthy. Raised, never papered over."""
+
+
+class NoZeroPose(ValidationError):
+    """The reference replay took no zero pose: the app produced no angle for this recording."""
 
 
 # ═══════════════════════════════ encoder adapter ═══════════════════════════════
@@ -438,7 +417,7 @@ def app_angle(samples) -> dict:
     cap: dict = {}
     t, knee = tuner.replay_trial(samples, config, tick_s=tuner.ANALYSIS_TICK_S, capture=cap)
     if len(t) == 0 or "q_zero" not in cap:
-        raise ValidationError(
+        raise NoZeroPose(
             "the replay on REFERENCE_REPLAY_CONFIG took no zero pose (no trusted release: no still "
             "hold before a 1 rad/s departure). There is no app angle for this recording; nothing is "
             "substituted for it.")
@@ -506,9 +485,13 @@ def _lowpass(x, fs, hz):
 
 def principal_axis(gyro):
     """Unit axis carrying most of the fast rotation, and the fraction of the fast
-    rotation's energy that is NOT on it (0 for a perfect hinge)."""
+    rotation's energy that is NOT on it (0 for a perfect hinge).
+
+    "Fast" is above half the AXIS_TOP_PERCENTILE of the gyro magnitude, not half its
+    maximum: the run sheet ends a raw-mode trial with a knuckle tap, and a sharp one is a
+    few samples at several times the swing's speed, which would leave nothing else "fast"."""
     mag = np.linalg.norm(gyro, axis=1)
-    fast = gyro[mag >= max(0.5 * float(mag.max()), 0.3)]
+    fast = gyro[mag >= max(0.5 * float(np.percentile(mag, AXIS_TOP_PERCENTILE)), 0.3)]
     if len(fast) < 5:
         raise ValidationError("the gyro never rotates fast enough to find a swing axis")
     w, v = np.linalg.eigh(fast.T @ fast)
@@ -569,27 +552,11 @@ def release_onset(t, rate, near=None):
     return t0, pk, hold_rms
 
 
-def wideband_rate(t, angle_deg, fs):
-    """The encoder's signed rate (rad/s) as a mean over ZERO_WIDEBAND_SPAN_S, from the
-    UNFILTERED position: a boxcar of half the span against quantisation, then a difference
-    across the span (about 40 Hz wide at 10 ms). -> (times at the middle of each span, rate).
-    For asking whether the arm moved as fast as the app's raw gyro says, on a knock too
-    short for the 8 Hz alignment rate.
-
-    A value that differs from both its neighbours for ONE sample is an electrical glitch,
-    not the arm (3 deg in 1 ms and back is 3000 deg/s twice): a 3-sample median removes it
-    first, where the span holds at least six samples (below that a median would eat a real
-    short knock, and none is applied)."""
-    a = np.asarray(angle_deg, float)
-    n = max(1, int(round(ZERO_WIDEBAND_SPAN_S * fs)))
-    nb = max(1, n // 2)
-    if len(a) <= n + nb:
-        return np.array([]), np.array([])
-    if n >= 6:
-        a = np.concatenate([a[:1], np.median(np.column_stack([a[:-2], a[1:-1], a[2:]]), axis=1), a[-1:]])
-    a = np.convolve(a, np.ones(nb) / nb, mode="valid")
-    tm = np.asarray(t, float)[(nb - 1) // 2:(nb - 1) // 2 + len(a)]
-    return 0.5 * (tm[n:] + tm[:-n]), np.radians((a[n:] - a[:-n]) * fs / n)
+def _half_period(t, rate, t_release, over_s=6.0):
+    """Median spacing of the rate's zero crossings in the first `over_s` after the release."""
+    c = _crossings(t, rate)
+    c = c[(c > t_release + 0.1) & (c < t_release + over_s)]
+    return float(np.median(np.diff(c))) if len(c) >= 3 else float("nan")
 
 
 def xcorr_offset(a, b, fs):
@@ -769,6 +736,17 @@ def analyse_trial(phone_path, encoder_path, *, encoder_format="labview_bin", enc
         flags.append("release_not_where_xcorr_expects")
     off_rel = rel_p - rel_e
     offset = off_rel if align == "release" else off_xc
+    # The two alignments are independent readings of one clock offset. If they disagree by
+    # more than the sync tolerance the offset is NOT KNOWN, whichever one --align picks, and
+    # every comparison across it (lag, gain, RMSE) is of two different instants. Typical
+    # cause: something before the release that only one instrument saw (the phone shifting
+    # in its clamp for two or three samples pre-empts the phone's release candidate, and the
+    # release alignment lands a third of a second early). Not assessed, and not neutral.
+    if not abs(off_rel - off_xc) <= PROVISIONAL_SYNC_DISAGREE_S:
+        flags.append("clock_alignments_disagree")
+    # The swing's half-period on each instrument's own clock, from its own rate: a ratio far
+    # from 1 on every swing of a session is a wrong sample rate in session.json (analyse_session).
+    row["period_ratio_encoder_to_phone"] = _half_period(tea, w_enc, rel_e) / _half_period(tpa, w_ax, rel_p)
     rate_ratio = pk_p / pk_e if pk_e else np.nan
     row.update(release_phone_s=rel_p, release_encoder_s=rel_e, clock_offset_release_s=off_rel,
                clock_offset_xcorr_s=off_xc, clock_offset_diff_ms=1e3 * (off_rel - off_xc),
@@ -816,57 +794,12 @@ def analyse_trial(phone_path, encoder_path, *, encoder_format="labview_bin", enc
         flags.append("zero_instant_approximate")
     tz_enc = t_zero - offset
     if not (ZERO_WINDOW_S[0] <= t_zero - rel_p <= ZERO_WINDOW_S[1]):
-        # The app zeroed away from the release. Whose fault is read off the ENCODER. The app
-        # zeroes when the gyro departs at APP_RELEASE_RATE_RAD_S out of a hold. If the zero is
-        # BEFORE the release and the arm really moved that fast there (a brisk lift, a bump),
-        # the operator gave the app a departure to zero on: the fixture did not deliver the
-        # protocol, and the swing is not assessed (the app also kept that zero through the
-        # hold that followed, so this is not cleared of the app either: UNRESOLVED). In every
-        # other case (the arm was not departing there, or the zero came after the release the
-        # fixture did deliver) nothing on the fixture explains it.
-        #
-        # Like with like: the app fires on RAW gyro samples, so the encoder is read wide-band
-        # (its mean rate over ZERO_WIDEBAND_SPAN_S from the unfiltered position), not on the
-        # 8 Hz rate used for alignment, which smooths a 25 ms knock to a quarter of its size.
-        # That rate's own noise is measured in the still second before the release; if the
-        # noise alone could reach the threshold the encoder cannot tell and nothing is concluded.
-        #
-        # Only motion that could have CAUSED the zero counts: from ZERO_LOOK_BEFORE_S before
-        # it to ZERO_LOOK_AFTER_S after it (two phone samples and the sync tolerance). A ring
-        # of the arm or a glitch of the encoder 0.2 s later explains nothing.
-        #
-        # And the encoder's mean over a span cannot see everything the gyro can: a knock
-        # shorter than the span, or the phone moving in its clamp with the arm still. So the
-        # PHONE'S OWN raw gyro is asked too. If it reached the app's rate at the zero, the
-        # app did what it is built to do, on motion it was given: not a fault of its logic
-        # (zero_on_phone_only_motion; whether the arm, the clamp or the sensor moved cannot be
-        # told, and the swing is UNRESOLVED). The app's fault is only a zero that NEITHER the
-        # encoder NOR the gyro explains.
+        # The app took its zero pose away from the release. WHY is not determined here: the
+        # app, the phone moving in its clamp, a knock on the arm, a brisk lift, or a wrong
+        # pairing all do it, and telling them apart needs real bench data (see "Deferred
+        # until bench data" in the analysis doc). The swing is not assessed, and it is not
+        # neutral: UNRESOLVED.
         flags.append("zero_not_at_release")
-        thr = ZERO_REAL_DEPARTURE_FRAC * APP_RELEASE_RATE_RAD_S
-        t_wb, w_wb = wideband_rate(enc.t_s, enc.angle_deg, enc.fs_hz)
-        quiet = w_wb[(t_wb >= rel_e - 1.0) & (t_wb <= rel_e - 0.1)]
-        # RMS about the median, not a MAD: on a quantised position the MAD is either 0 or a
-        # whole step of the rate, and says "no noise" of an encoder flickering by a count.
-        noise = float(np.sqrt(np.mean((quiet - np.median(quiet)) ** 2))) if len(quiet) >= 20 else np.nan
-        near_zero = (t_wb >= tz_enc - ZERO_LOOK_BEFORE_S) & (t_wb <= min(tz_enc + ZERO_LOOK_AFTER_S, rel_e - 0.05))
-        seen = tz_enc < rel_e and near_zero.any()
-        g_near = (tg >= t_zero - ZERO_LOOK_BEFORE_S) & (tg <= t_zero + ZERO_LOOK_AFTER_S)
-        gyro_peak = float(np.max(np.linalg.norm(gyro[g_near], axis=1))) if g_near.any() else np.nan
-        row.update(encoder_peak_rate_at_zero_rad_s=float(np.max(np.abs(w_wb[near_zero]))) if seen else np.nan,
-                   encoder_wideband_noise_rad_s=noise, phone_gyro_peak_at_zero_rad_s=gyro_peak)
-        if tz_enc - ZERO_LOOK_BEFORE_S < enc.t_s[0]:
-            flags.append("zero_before_encoder_log")   # the encoder did not see it: cannot be told
-        elif tz_enc >= rel_e:
-            flags.append("zero_misplaced_by_app")     # after a release the fixture did deliver
-        elif not (ZERO_NOISE_SIGMAS * noise < thr):
-            flags.append("zero_encoder_cannot_tell")  # the encoder is too noisy to see a knock or its absence
-        elif row["encoder_peak_rate_at_zero_rad_s"] >= thr:
-            flags.append("zero_on_other_motion")      # the arm moved: the fixture gave the app a departure
-        elif gyro_peak >= thr:
-            flags.append("zero_on_phone_only_motion")  # the gyro moved and the encoder's mean rate did not
-        else:
-            flags.append("zero_misplaced_by_app")     # nothing moved, on either instrument
     th = lambda t: np.interp(t, enc.t_s, th_enc)        # noqa: E731
     v_at = lambda t: np.interp(t, enc.t_s, v_enc)       # noqa: E731
     hold_lvl = float(np.mean(th(np.linspace(rel_e - 1.0, rel_e - 0.1, 50))))
@@ -1111,12 +1044,10 @@ def judging_variants() -> str:
 def judge_trial(r: dict) -> dict:
     """Per-swing verdicts against the PROVISIONAL limits, on the comparisons named by the
     PROVISIONAL_*_VARIANT constants. True, False, or None = not assessed. A swing carrying
-    any GATING_FLAGS flag is not assessed at all: its numbers are reported, none is passed.
-    A swing carrying an APP_FAULT_FLAGS flag IS assessed and fails as a swing
-    (`pass_no_app_fault`, and so `pass_all`), whatever its A1 to A5 numbers say: those
-    comparisons forgive the zero pose and the lag by construction, which is exactly what the
-    app got wrong. `pass_A1_A5` is A1 to A5 alone; `pass_all` is that and no app fault.
-    An app fault is kept on a gated swing only where it is still proven (COVERAGE_ONLY_FLAGS)."""
+    any GATING_FLAGS flag is not assessed at all: its numbers are reported, none is passed
+    (`not_assessed_because`). `pass_A1_A5` is criteria A1 to A5 for the swing; Z*, L* and
+    A9* are session lines. `swing_verdict` is the one cell the report prints for the swing
+    (swing_cell), qualified where the pairing is unverified; `pairing_verified` says which."""
     if PROVISIONAL_A1_A2_VARIANT not in ("lagrm", "clock", "matched", "abs") or PROVISIONAL_A3_GAIN_VARIANT not in _GAIN_KEY:
         raise ValidationError("PROVISIONAL_A1_A2_VARIANT / PROVISIONAL_A3_GAIN_VARIANT name no known comparison")
 
@@ -1138,37 +1069,72 @@ def judge_trial(r: dict) -> dict:
         "pass_lag": ok(r.get("lag_minus_expected_ms"), lambda v: abs(v) <= PROVISIONAL_LAG_VS_FOOTING_MS),
         "pass_zero_fall": ok(r.get("zero_pose_fall_deg"), lambda v: v <= PROVISIONAL_ZERO_POSE_FALL_MAX_DEG),
     }
-    have = (r.get("flags") or "").split(";")
-    gating = [f for f in have if f in GATING_FLAGS]
-    faults = [f for f in have if f in APP_FAULT_FLAGS]
-    if "lag_pegged" in faults:
-        out["pass_lag"] = False                # no lag within the search: not "no verdict", a failed one
-    out["pass_no_app_fault"] = not faults
+    gating = [f for f in (r.get("flags") or "").split(";") if f in GATING_FLAGS]
     out["not_assessed_because"] = ";".join(gating)
-    suspected: list[str] = []
-    if gating:
-        # Nothing of a gated swing is passed. One thing survives: an app fault, when no gating
-        # flag present undermines it (APP_FAULT_STANDS_BESIDE: coverage, or a release angle
-        # the log did not give). Beside any other gating flag the fault's own evidence is in
-        # doubt: it is not concluded, and it is not dropped either. It is SUSPECTED, and the
-        # swing is UNRESOLVED (is_unresolved), never the neutral "not assessed".
-        proven = bool(faults) and all(f in APP_FAULT_STANDS_BESIDE for f in gating)
+    if gating:                                 # nothing of a gated swing is passed, or failed
         out = {k: (None if k.startswith("pass_") else v) for k, v in out.items()}
-        out["pass_no_app_fault"] = False if proven else None
-        if not proven:
-            faults, suspected = [], faults
-    out["app_fault"] = ";".join(faults)
-    out["app_fault_suspected"] = ";".join(suspected)
-
-    def worst(keys):                           # one failed criterion fails, whatever else could not be assessed
-        v = [out[k] for k in keys]
-        return False if any(x is False for x in v) else None if any(x is None for x in v) else True
-
-    a15 = ("pass_A1_rmse", "pass_A3_gain", "pass_A3_r", "pass_A4_excursion", "pass_A5_f", "pass_A5_tau", "pass_A5_n")
-    out["pass_A1_A5"] = worst(a15)                               # A1 to A5, and nothing else
-    out["pass_all"] = worst(a15 + ("pass_no_app_fault",))        # the swing: A1 to A5 and no app fault
+    v = [out[k] for k in ("pass_A1_rmse", "pass_A3_gain", "pass_A3_r", "pass_A4_excursion", "pass_A5_f",
+                          "pass_A5_tau", "pass_A5_n")]
+    # one failed criterion fails the swing, whatever else could not be assessed
+    out["pass_A1_A5"] = False if any(x is False for x in v) else None if any(x is None for x in v) else True
     out["judged_on"] = judging_variants()
+    out["pairing_verified"] = not is_pairing_unverified(r)
+    out["swing_verdict"] = swing_cell({**r, **out})
     return out
+
+
+# ═══════════════════════════════ one swing's state, derived once ═══════════════════════════════
+#: The words every verdict set aside for an unverified pairing carries, and the overall line repeats.
+PAIRING_UNVERIFIED = "pairing unverified"
+
+
+def swing_state(r) -> str:
+    """Where one row stands, and the ONLY place that is decided:
+      "not analysed"  the row carries an error instead of numbers
+      "unresolved"    gated by a flag behind which the phone or the app may be the reason
+                      (PHONE_MAY_BE_AT_FAULT_FLAGS); no cause is attributed
+      "not assessed"  gated by any other flag (the fixture, the operator, the log)
+      "assessed"      judged on its numbers
+    is_assessed, is_unresolved, swing_cell, pooled and verdicts all read this."""
+    if "error" in r:
+        return "not analysed"
+    gating = [f for f in (r.get("not_assessed_because") or "").split(";") if f]
+    if any(f in PHONE_MAY_BE_AT_FAULT_FLAGS for f in gating):
+        return "unresolved"
+    return "not assessed" if gating else "assessed"
+
+
+def is_assessed(r) -> bool:
+    """Analysed, and carrying no gating flag."""
+    return swing_state(r) == "assessed"
+
+
+def is_unresolved(r) -> bool:
+    """Not assessed, for a reason behind which the phone or the app itself may be the fault."""
+    return swing_state(r) == "unresolved"
+
+
+def is_pairing_unverified(r) -> bool:
+    """The pairing of this row's phone trial with its rig-log row (and so its encoder file)
+    rests on an order nothing checked: no timestamps to order the manifest, or counts that
+    did not agree. Nothing read off such a row is a PASS or a FAIL."""
+    return bool(r.get("pairing_unverified") or r.get("pairing_order_unverified"))
+
+
+def swing_cell(r) -> str:
+    """The one cell a swing gets in the report and in `swing_verdict` of trials.csv: A1 to A5
+    for that swing (not Z*, L* or A9*, which are session lines). On a pairing nothing
+    verified it says what the swing reads AS PAIRED, and that this is not a verdict."""
+    state = swing_state(r)
+    if state == "not analysed":
+        return "not analysed"
+    if state == "unresolved":
+        text = "NOT ASSESSED - UNRESOLVED (cause not determined)"
+    elif state == "not assessed" or r.get("pass_A1_A5") is None:
+        text = "NOT ASSESSED"
+    else:
+        text = "pass" if r["pass_A1_A5"] else "FAIL"
+    return f"{text}, as paired ({PAIRING_UNVERIFIED}: not a verdict)" if is_pairing_unverified(r) else text
 
 
 # ═══════════════════════════════ a session ═══════════════════════════════
@@ -1230,6 +1196,20 @@ def load_session(folder, allow_count_mismatch=False) -> dict:
         raise ValidationError(f"{sj}: required field(s) missing: {', '.join(missing)}")
     if info["encoder"]["format"] == "labview_bin" and not info["encoder"].get("n_channels"):
         raise ValidationError(f"{sj}: required field(s) missing: encoder.n_channels (a labview_bin file does not say)")
+    # Numbers the encoder reader divides by. A string ("1000 Hz") used to surface per swing as
+    # "not analysed", with a message about another field.
+    def number(key, whole=False):
+        v = _dig(info, key)
+        ok = (isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
+              and (not whole or float(v).is_integer()))
+        if not ok:
+            raise ValidationError(f"{sj}: `{key}` must be a positive {'whole ' if whole else ''}number written as a "
+                                  f"JSON number (1000, not \"1000 Hz\"), got {v!r}")
+    number("encoder.sample_rate_hz")
+    if _dig(info, "encoder.n_channels") is not None:
+        number("encoder.n_channels", whole=True)
+    if _dig(info, "encoder.counts_per_rev") is not None:
+        number("encoder.counts_per_rev")
     info["_to_fill"] = [k for k in TO_FILL_FIELDS if _dig(info, k) in (None, "", {})]
     # A radius is measured only if the sheet says so; a number alone may be the 0.30 m default.
     info["_radius_measured"] = bool(info.get("phone_radius_measured") is True and info.get("phone_radius_m") is not None)
@@ -1244,6 +1224,10 @@ def load_session(folder, allow_count_mismatch=False) -> dict:
     log_note = None
     with open(lp, "rb") as fh:
         raw = fh.read()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff") or b"\x00" in raw[:2000]:
+        # Excel's "Unicode Text". Read as cp1252 it is every other byte NUL and "columns missing".
+        raise ValidationError(f"{lp}: the rig log is UTF-16 (Excel's \"Unicode Text\"), not UTF-8. Save it as "
+                              f"\"CSV UTF-8 (Comma delimited)\" and run again.")
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -1262,8 +1246,22 @@ def load_session(folder, allow_count_mismatch=False) -> dict:
             raise ValidationError(f"{lp}: line {i} has more fields than the header ({len(cols) + len(r[None])} "
                                   f"against {len(cols)}): an unquoted comma, in the notes? Put the cell in double "
                                   f"quotes or remove the comma.")
-    log = [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in raw_rows]
     lacking = [c for c in RIG_LOG_COLUMNS if c not in cols]
+    for ch, name in ((";", "semicolons"), ("\t", "tabs")):
+        if lacking and len(cols) == 1 and ch in cols[0]:
+            raise ValidationError(f"{lp}: the rig log is delimited by {name}, not commas (Excel does this where the "
+                                  f"decimal separator is a comma). Save it as \"CSV UTF-8 (Comma delimited)\" with "
+                                  f"commas between the columns and run again.")
+    for i, r in enumerate(raw_rows, start=2):
+        # A row that stops before a column the pairing needs (cut short in copying, or a
+        # line break inside it): its app_result would read as blank, i.e. as a swing.
+        short = [c for c in RIG_LOG_COLUMNS if c in cols and r.get(rd.fieldnames[cols.index(c)]) is None]
+        if short and any((v or "").strip() for v in r.values() if isinstance(v, str)):
+            raise ValidationError(f"{lp}: line {i} stops before the column(s) {short} "
+                                  f"({sum(v is not None for v in r.values())} fields against {len(cols)} in the "
+                                  f"header): a row cut short? Whether it was an ERROR attempt or a swing cannot be "
+                                  f"told, and the pairing after it would shift by one.")
+    log = [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in raw_rows]
     if lacking:
         raise ValidationError(f"{lp}: column(s) missing: {lacking}. Without app_result an ERROR attempt "
                               f"cannot be told from a swing, and the pairing shifts by one.")
@@ -1417,62 +1415,7 @@ def load_session(folder, allow_count_mismatch=False) -> dict:
                                      f"paired in order without knowing where they diverge")
     if log_note:
         out["log_note"] = log_note
-    enc_note = zero_rule_encoder_note(info["encoder"])
-    if enc_note:
-        out["encoder_note"] = enc_note
-        print(f"WARNING: {folder}: {enc_note}.", file=sys.stderr)
     return out
-
-
-def zero_rule_min_counts_per_rev(span_s=None) -> float:
-    """The coarsest encoder on which the misplaced-zero rule can work at all: one count in
-    one ZERO_WIDEBAND_SPAN_S must read under the departure threshold, or a single count of
-    flicker is itself a "knock". 2 pi / (span x threshold): about 785 at 10 ms and 0.8 rad/s."""
-    span = ZERO_WIDEBAND_SPAN_S if span_s is None else span_s
-    return 2 * math.pi / (span * ZERO_REAL_DEPARTURE_FRAC * APP_RELEASE_RATE_RAD_S)
-
-
-#: Below this many times the minimum the rule is thin: flicker of a count is a large part
-#: of the threshold and the swing is likely to read zero_encoder_cannot_tell.
-ZERO_RULE_COMFORT_FACTOR = 2.0
-#: One count must also move the rate AS COMPUTED (span in whole samples, boxcar of half of
-#: them) by less than this fraction of the threshold. At 1 kHz the boxcar is 5 samples; at
-#: 200 Hz and below there is none, and a coarser encoder is needed for the same margin.
-ZERO_RULE_STEP_MAX_FRAC = 0.25
-
-
-def zero_rule_encoder_note(encoder: dict) -> str | None:
-    """A session-level warning when session.json's encoder is too coarse, or too coarse for
-    its sample rate, for the misplaced-zero rule (whose fault a zero away from the release
-    is). None if it is fine, or if session.json does not give the numbers (counts_per_rev is
-    a TO FILL field). The two margins are from a synthetic grid (see the analysis doc), not
-    from an encoder."""
-    try:
-        cpr = float(encoder.get("counts_per_rev"))
-        fs = float(encoder.get("sample_rate_hz"))
-    except (TypeError, ValueError):
-        return None
-    if not (cpr > 0 and fs > 0):
-        return None
-    need = zero_rule_min_counts_per_rev()
-    thr = ZERO_REAL_DEPARTURE_FRAC * APP_RELEASE_RATE_RAD_S
-    n = max(1, int(round(ZERO_WIDEBAND_SPAN_S * fs)))
-    step = math.radians(360.0 / cpr) * fs / n / max(1, n // 2)      # one count, in the rate as computed
-    if cpr < need:
-        how = "too coarse"
-    elif cpr < ZERO_RULE_COMFORT_FACTOR * need:
-        how = "marginal"
-    elif step >= ZERO_RULE_STEP_MAX_FRAC * thr:
-        how = "too coarse for its sample rate"
-    else:
-        return None
-    return (f"session.json's encoder ({cpr:g} counts per revolution at {fs:g} Hz) is {how} for the rule that "
-            f"decides whose fault a zero pose away from the release is: one count in "
-            f"{1e3 * ZERO_WIDEBAND_SPAN_S:g} ms reads {2 * math.pi / (cpr * ZERO_WIDEBAND_SPAN_S):.2f} rad/s "
-            f"(a step of {step:.2f} rad/s in the rate as computed at this sample rate) against a threshold of "
-            f"{thr:g} rad/s; the rule needs about {need:.0f} counts per revolution at the very least. Expect such "
-            f"zeros to read `zero_encoder_cannot_tell` (UNRESOLVED)"
-            + (", or a single count of flicker to pass for a knock" if cpr < need else ""))
 
 
 def analyse_session(folder, *, align="release", allow_count_mismatch=False, keep_traces=False):
@@ -1496,7 +1439,8 @@ def analyse_session(folder, *, align="release", allow_count_mismatch=False, keep
         common["pairing_unverified"] = S["pairing_unverified"]
     for log_row, ph in zip_longest(S["usable"], S["phones"]):
         if log_row is None:                               # a phone trial the log has no row for
-            rows.append(dict(common, trial_id="", phone_file=os.path.basename(ph["_path"]), pass_all=None, flags="error",
+            rows.append(dict(common, trial_id="", phone_file=os.path.basename(ph["_path"]), flags="error",
+                             swing_verdict="not analysed",
                              error=f"unpaired: exported phone trial {os.path.basename(ph['_path'])} has no rig-log row left to pair it with "
                                    "(COUNT MISMATCH)"))
             continue
@@ -1512,7 +1456,7 @@ def analyse_session(folder, *, align="release", allow_count_mismatch=False, keep
         if cond == "W0" and meta["added_mass_kg"] is None:
             meta["added_mass_kg"] = 0.0
         if ph is None:                                    # a rig-log row with no phone trial left
-            rows.append(dict(meta, pass_all=None, flags="error",
+            rows.append(dict(meta, flags="error", swing_verdict="not analysed",
                              error="unpaired: a rig-log row with no exported phone trial left to pair it with "
                                    "(COUNT MISMATCH)"))
             continue
@@ -1531,24 +1475,72 @@ def analyse_session(folder, *, align="release", allow_count_mismatch=False, keep
                                       extra_flags=extra))
         except (ValidationError, NotImplementedError, ValueError) as ex:
             rows.append(dict(meta, phone_file=os.path.basename(ph["_path"]), error=f"{type(ex).__name__}: {ex}",
-                             pass_all=None, flags="error"))
+                             flags="error", swing_verdict="not analysed"))
+            if isinstance(ex, NoZeroPose):                # counted and printed on its own line (no_zero_line)
+                rows[-1]["no_zero_pose"] = True
     # Encoder files no rig-log row names (possible only with an allowed count mismatch).
     named = {S["num"](r.get("encoder_trial")) for r in S["log"] if r.get("encoder_trial")}
     for n in sorted(set(S["encoders"]) - named):
-        rows.append(dict(common, trial_id="", encoder_file=os.path.basename(S["encoders"][n]), pass_all=None,
+        rows.append(dict(common, trial_id="", encoder_file=os.path.basename(S["encoders"][n]),
+                         swing_verdict="not analysed",
                          flags="error", error="unpaired: an encoder file that no rig-log row names"))
+    refuse_if_encoder_misdescribed(rows, folder)
     return rows, S
+
+
+def refuse_if_encoder_misdescribed(rows, folder):
+    """session.json tells the reader the encoder's sample rate and units, and nothing in the
+    file contradicts it. Two mistakes there show on every swing ALIKE, and used to read as
+    a session of unresolved swings (and, before the split, as app faults):
+      a wrong sample_rate_hz   the encoder's swing period is the phone's times a constant
+      wrong units or counts    the encoder's release angle is the rig log's times a constant
+    If at least two swings were analysed and EVERY one is outside the plausible band on the
+    same side, the session is refused, naming the field. One swing alone, or swings on
+    both sides of the band (a pairing shifted between two release angles), are left to the
+    per-swing flags."""
+    def consistent(key, band, of=None):
+        v = []
+        for r in rows:
+            if "error" in r:
+                continue
+            x, d = r.get(key), (r.get(of) if of else 1.0)
+            if x is None or d is None or not (np.isfinite(x) and np.isfinite(d)) or d <= 0:
+                return None                    # a swing that cannot say: do not refuse on the others
+            v.append(x / d)
+        if len(v) < 2 or not (all(x < band[0] for x in v) or all(x > band[1] for x in v)):
+            return None
+        return float(np.median(v))             # the median: one swing's own trouble can sit further out
+
+    k = consistent("period_ratio_encoder_to_phone", ENCODER_PERIOD_RATIO_OK)
+    if k is not None:
+        raise ValidationError(
+            f"{folder}: on every analysed swing the encoder's swing period is about {k:.2f} times the phone's. One "
+            f"pendulum has one period: session.json's `encoder.sample_rate_hz` is wrong by about that factor "
+            f"(the true rate is near {k:.3g} times the one written). Nothing is reported; correct it and run again.")
+    k = consistent("release_from_rest_deg", ENCODER_ANGLE_RATIO_OK, of="release_nominal_deg")
+    if k is not None:
+        raise ValidationError(
+            f"{folder}: on every analysed swing the encoder's release angle is about {k:.3g} times the rig log's. "
+            f"session.json's `encoder.position_units` (deg or counts), `encoder.counts_per_rev` or the channel "
+            f"read is wrong. Nothing is reported; correct it and run again.")
+
+
+def no_zero_line(rows) -> str | None:
+    """The swings on which the app took no zero pose, on a line of their own. They are "not
+    analysed" like any other error and count the same (the session cannot read PASS and the
+    script exits 1). HOW THEY SHOULD COUNT IS AN OPEN OWNER DECISION: an app that never
+    zeroes on a delivered release may be the very failure looked for."""
+    nz = [r for r in rows if r.get("no_zero_pose")]
+    if not nz:
+        return None
+    return (f"{len(nz)} swing(s): app took no zero pose ("
+            + ", ".join(str(r.get("trial_id") or r.get("phone_file")) for r in nz) + ")")
 
 
 # ═══════════════════════════════ pooled statistics ═══════════════════════════════
 def _vals(rows, key):
     v = np.array([r.get(key, np.nan) if r.get(key) is not None else np.nan for r in rows], float)
     return v[np.isfinite(v)]
-
-
-def is_assessed(r) -> bool:
-    """Analysed, and carrying no gating flag."""
-    return "error" not in r and not r.get("not_assessed_because")
 
 
 def pooled(rows) -> dict:
@@ -1590,14 +1582,19 @@ def pooled(rows) -> dict:
 
 
 def verdicts(rows) -> list[dict]:
-    """One line per criterion for one phone's swings. PASS needs EVERY attempted swing
-    assessed and passing, on a pairing whose counts agreed; FAIL needs one assessed swing
-    (or the pooled figure) failing, whatever else could not be assessed; INCOMPLETE means
-    the assessed swings pass but some swing was not assessed (not analysed, or flagged) or
-    the counts did not agree; UNRESOLVED is INCOMPLETE where a swing was set aside for a
-    reason that may be the phone or the app itself (PHONE_MAY_BE_AT_FAULT_FLAGS), so the
-    missing swing is not neutral; NOT ASSESSABLE means there is nothing to judge. Every
-    line says how many swings it rests on and which comparison it used."""
+    """One line per criterion for one phone's swings. Each line is judged ONCE, on the
+    assessed swings (and the pooled figures):
+      NOT ASSESSABLE  nothing to judge
+      FAIL            one assessed swing, or the pooled figure, fails
+      PASS            every attempted swing was assessed and passes, counts agreed
+      INCOMPLETE      the assessed swings pass, but some swing was not assessed
+    and then qualified ONCE, by the session's state (`qualify`):
+      pairing unverified   nothing is passed or failed: FAIL reads UNRESOLVED (as paired it
+                           would fail), INCOMPLETE and NOT ASSESSABLE say "pairing unverified"
+      unresolved swings    a line that is not a FAIL reads UNRESOLVED: a swing was set aside
+                           for a reason that may be the phone or the app (swing_state), so
+                           the missing swing is not neutral
+    Every line says how many swings it rests on and which comparison it used."""
     good = [r for r in rows if is_assessed(r)]
     P = pooled(rows)
     n, total = len(good), len(rows)
@@ -1606,18 +1603,25 @@ def verdicts(rows) -> list[dict]:
     if leftover:                               # a phone trial and an encoder file left over may be one swing
         count += f", {leftover} of them unpaired leftovers"
     va, vg = VARIANT_LABEL[PROVISIONAL_A1_A2_VARIANT], VARIANT_LABEL[PROVISIONAL_A3_GAIN_VARIANT]
-    # A pairing whose counts did not agree, or whose order nothing verifies, is never a PASS.
-    mismatch = any(r.get("pairing_count_mismatch") or is_pairing_unverified(r) for r in rows)
-    # And where the pairing of phone trial to rig-log row is itself unverified, it is never a
-    # FAIL either: a swing compared with another swing's encoder file "fails" A3 and A5, and
-    # that says nothing about the app. Such a line reads UNRESOLVED (it would have failed)
-    # or INCOMPLETE (it would have passed), with the reason, and the overall line repeats it.
     unverified = any(is_pairing_unverified(r) for r in rows)
+    mismatch = unverified or any(r.get("pairing_count_mismatch") for r in rows)   # never a PASS
     unresolved = [r for r in rows if is_unresolved(r)]
-    n_susp = sum(1 for r in unresolved if r.get("app_fault_suspected"))
-    unresolved_note = (f"{len(unresolved)} swing(s) set aside where a wrong pairing or a faulty phone or app "
-                       f"cannot be told apart"
-                       + (f", {n_susp} of them with an app fault suspected but not concluded" if n_susp else ""))
+    unresolved_note = (f"{len(unresolved)} swing(s) set aside where the cause is not determined: a wrong pairing, "
+                       f"the fixture, or the phone or app")
+
+    def qualify(base):
+        if unverified:
+            # A swing compared with another swing's encoder file "fails" A3 and A5, and that
+            # says nothing about the app: no line is passed OR failed.
+            if base == "FAIL":
+                return f"UNRESOLVED ({PAIRING_UNVERIFIED}; as paired, this line would fail)"
+            return f"{base} ({PAIRING_UNVERIFIED})" + (f" - UNRESOLVED: {unresolved_note}"
+                                                      if unresolved and base == "NOT ASSESSABLE" else "")
+        if unresolved and base == "NOT ASSESSABLE":
+            return f"NOT ASSESSABLE - UNRESOLVED: {unresolved_note}"
+        if unresolved and base == "INCOMPLETE":
+            return f"UNRESOLVED ({unresolved_note})"
+        return base
 
     def allof(*keys):
         v = [r.get(k) for r in good for k in keys]
@@ -1628,20 +1632,13 @@ def verdicts(rows) -> list[dict]:
         return True
 
     def line(cid, what, limit, value, ok, on):
-        if ok is None or n == 0:
-            verdict = "NOT ASSESSABLE" + (f" - UNRESOLVED: {unresolved_note}" if unresolved else "")
-        elif unverified:
-            verdict = (f"UNRESOLVED ({PAIRING_UNVERIFIED}; as paired, this line would fail)" if not ok
-                       else f"INCOMPLETE ({PAIRING_UNVERIFIED})")
-        elif not ok:
-            verdict = "FAIL"
-        elif n == total and not mismatch:
-            verdict = "PASS"
-        elif unresolved:
-            verdict = f"UNRESOLVED ({unresolved_note})"
-        else:
-            verdict = "INCOMPLETE"
-        return dict(criterion=cid, what=what, judged_on=on, limit=limit, value=f"{value} ({count})", verdict=verdict)
+        base = ("NOT ASSESSABLE" if ok is None or n == 0 else "FAIL" if not ok
+                else "PASS" if n == total and not mismatch else "INCOMPLETE")
+        return dict(criterion=cid, what=what, judged_on=on, limit=limit, value=f"{value} ({count})",
+                    verdict=qualify(base))
+
+    def flagged(flag):
+        return [r for r in rows if "error" not in r and flag in (r.get("flags") or "").split(";")]
 
     def rng(key, fmt="{:+.2f}"):
         v = _vals(good, key)
@@ -1699,58 +1696,25 @@ def verdicts(rows) -> list[dict]:
                f"(from {P['clock_ppm_n']} swings); release against cross-correlation max |{P['sync_diff_max_abs_ms']:.1f}| ms")
     else:
         a9, val = None, "none"
+    apart = flagged("clock_alignments_disagree")
+    if apart:                                  # set aside, so not in the figures above: said here
+        val += (f"; {len(apart)} swing(s) set aside because the two alignments disagree by more than the limit "
+                f"(up to |{max(abs(r['clock_offset_diff_ms']) for r in apart):.0f}| ms): clocks not aligned, not assessed")
     out.append(line("A9*", "synchronisation: clock-rate ratio; release against cross-correlation (stands in for the "
                     "end tap, which is not read)",
                     f"|session mean| + 2 SE within {PROVISIONAL_A9_CLOCK_PPM:g} ppm; within {1e3 * PROVISIONAL_SYNC_DISAGREE_S:g} ms",
                     val, a9, "gyro rate against encoder velocity"))
     out.append(line("L*", "app lag behind its own gyro, against the footing's EMA alone (not in the plan)",
                     f"within +/-{PROVISIONAL_LAG_VS_FOOTING_MS:g} ms of the EMA's lag at the swing's frequency",
-                    f"lag {rng('lag_ms', '{:.0f}')} ms; minus expected {rng('lag_minus_expected_ms', '{:+.0f}')} ms",
+                    f"lag {rng('lag_ms', '{:.0f}')} ms; minus expected {rng('lag_minus_expected_ms', '{:+.0f}')} ms"
+                    + (f"; {len(flagged('lag_pegged'))} swing(s) where no lag within +/-{1e3 * LAG_SEARCH_S:g} ms fits "
+                       f"(not a lag: not assessed, cause not determined)" if flagged("lag_pegged") else ""),
                     allof("pass_lag"), VARIANT_LABEL["clock"]))
     out.append(line("Z*", "fall of the arm before the app's zero pose (not in the plan)",
                     f"<= {PROVISIONAL_ZERO_POSE_FALL_MAX_DEG:g} deg",
                     f"{rng('zero_pose_fall_deg', '{:.2f}')} deg; absolute bias over the swing {rng('bias_abs')} deg",
                     allof("pass_zero_fall"), "encoder, hold pose to the app's zero instant"))
-    # App faults are counted over every ANALYSED swing, not only the assessed ones: a fault
-    # the encoder proves on a swing whose tracking could not be assessed (not settled, say)
-    # is still a fault, and fails this line even if no swing at all was assessed.
-    faulty = [r for r in rows if "error" not in r and r.get("pass_no_app_fault") is False]
-    suspected = [r for r in rows if "error" not in r and r.get("app_fault_suspected")]
-    restless = [r for r in good if "phone_hold_not_still" in (r.get("flags") or "").split(";")]
-    name = lambda r: (f"{r.get('trial_id') or r.get('phone_file')} ({r['app_fault']}"  # noqa: E731
-                      + ("" if is_assessed(r) else "; A1 to A5 not assessed") + ")")
-    app = line("APP*", "swings the app itself got wrong on a release the fixture delivered: a zero pose away "
-               "from the release that neither the encoder nor the phone's own raw gyro explains (the encoder "
-               f"cannot see a knock shorter than its {1e3 * ZERO_WIDEBAND_SPAN_S:g} ms span, or a phone moving in "
-               "its clamp; the gyro can, and a zero on such motion is not counted here), or an angle further "
-               "than the lag search from its own gyro (not in the plan)",
-               "none",
-               (f"{len(faulty)} swing(s): " + ", ".join(name(r) for r in faulty) if faulty else "none")
-               + (f"; suspected, not concluded, on {len(suspected)} swing(s): "
-                  + ", ".join(f"{r.get('trial_id') or r.get('phone_file')} ({r['app_fault_suspected']}; beside "
-                              f"{r.get('not_assessed_because')})" for r in suspected) if suspected else "")
-               + (f"; phone gyro restless in a still hold on {len(restless)} swing(s) (judged; the phone or its "
-                  f"clamp)" if restless else ""),
-               allof("pass_no_app_fault"), "flags, with the encoder and the phone's raw gyro as the witnesses of "
-               "what moved")
-    if faulty:
-        app["verdict"] = (f"UNRESOLVED ({PAIRING_UNVERIFIED}; as paired, this line would fail)" if unverified
-                          else "FAIL")
-    elif suspected and "UNRESOLVED" not in app["verdict"]:
-        app["verdict"] = f"UNRESOLVED ({unresolved_note})"
-    out.append(app)
     return out
-
-
-#: The words every verdict set aside for an unverified pairing carries, and the overall line repeats.
-PAIRING_UNVERIFIED = "pairing unverified"
-
-
-def is_pairing_unverified(r) -> bool:
-    """The pairing of this row's phone trial with its rig-log row (and so its encoder file)
-    rests on an order nothing checked: no timestamps to order the manifest, or counts that
-    did not agree. Nothing read off such a row is a PASS or a FAIL."""
-    return bool(r.get("pairing_unverified") or r.get("pairing_order_unverified"))
 
 
 def overall_verdict(lines) -> str:
@@ -1780,14 +1744,6 @@ def overall_verdict(lines) -> str:
     return f"PASS (every evaluated line, against PROPOSED limits){tail}"
 
 
-def is_unresolved(r) -> bool:
-    """Not assessed, for a reason behind which the phone or the app itself may be the fault:
-    a PHONE_MAY_BE_AT_FAULT_FLAGS flag, or an app fault suspected but not concluded."""
-    return "error" not in r and (bool(r.get("app_fault_suspected"))
-                                 or any(f in PHONE_MAY_BE_AT_FAULT_FLAGS
-                                        for f in (r.get("not_assessed_because") or "").split(";")))
-
-
 # ═══════════════════════════════ report ═══════════════════════════════
 def _f(v, nd=2, plus=False):
     if v is None or (isinstance(v, float) and not np.isfinite(v)):
@@ -1795,46 +1751,6 @@ def _f(v, nd=2, plus=False):
     if isinstance(v, (bool, np.bool_)):
         return "pass" if v else "FAIL"
     return f"{v:+.{nd}f}" if plus else f"{v:.{nd}f}"
-
-
-def _as_paired(r, text):
-    """A swing's cell on a pairing nothing verified: what it reads as paired, and that it is not a verdict."""
-    return f"{text}, as paired ({PAIRING_UNVERIFIED}: not a verdict)" if is_pairing_unverified(r) else text
-
-
-def _verdict_a15(r):
-    """A1 to A5 for one swing, and nothing else."""
-    if "error" in r:
-        return "not analysed"
-    if r.get("not_assessed_because"):
-        return _as_paired(r, "NOT ASSESSED" + (" - UNRESOLVED: wrong pairing, or the phone or app"
-                                               if is_unresolved(r) else ""))
-    return _as_paired(r, _f(r.get("pass_A1_A5")) if r.get("pass_A1_A5") is not None else "NOT ASSESSED")
-
-
-def _app_fault_cell(r):
-    if r.get("app_fault"):
-        return r["app_fault"]
-    if r.get("app_fault_suspected"):
-        return f"suspected, not concluded ({r['app_fault_suspected']})"
-    return "none"
-
-
-def _verdict(r):
-    """The swing: A1 to A5 and no app fault (not Z*, L* or A9*, which are session lines). A
-    proven app fault fails it even when A1 to A5 could not be assessed; a suspected one
-    leaves it UNRESOLVED."""
-    if "error" in r:
-        return "not analysed"
-    if r.get("pass_no_app_fault") is False:
-        return _as_paired(r, f"FAIL (app fault: {r['app_fault']}"
-                          + ("" if is_assessed(r) else "; A1 to A5 not assessed") + ")")
-    if r.get("app_fault_suspected"):
-        return _as_paired(r, f"NOT ASSESSED - UNRESOLVED: app fault suspected, not concluded "
-                             f"({r['app_fault_suspected']})")
-    if r.get("not_assessed_because"):
-        return _verdict_a15(r)
-    return _as_paired(r, _f(r.get("pass_all")) if r.get("pass_all") is not None else "NOT ASSESSED")
 
 
 def encoder_scale_note(rows) -> str | None:
@@ -1946,12 +1862,14 @@ def summary_markdown(rows, sessions, title="Free-pendulum encoder validation") -
          "into the clock offset and is not observable; `lag` is the app's processed angle behind its own gyro.", "",
          "A swing with a quality flag (" + ", ".join(GATING_FLAGS) + ") is reported but NOT ASSESSED: none of its "
          "verdicts is a pass. A criterion passes only if every attempted swing was assessed and passed.", "",
-         "Those flags are for what the fixture, the operator or the log got wrong. What the phone or the app got "
-         "wrong is judged: a grossly wrong gyro on a pair its own static tilt corroborates (`phone_rate_off`) is "
-         "assessed and fails A3, and an app fault (" + ", ".join(APP_FAULT_FLAGS) + ") fails the swing and the "
-         "`APP*` line. Where a wrong pairing or a fixture fault and a faulty phone or app cannot be told apart ("
-         + ", ".join(PHONE_MAY_BE_AT_FAULT_FLAGS) + "), the swing is not assessed and every criterion it is "
-         "missing from reads **UNRESOLVED**, not INCOMPLETE: the missing swing may be the failure.", ""]
+         "Most of those flags are for what the fixture, the operator or the log got wrong. Behind some of them ("
+         + ", ".join(PHONE_MAY_BE_AT_FAULT_FLAGS) + ") the phone or the app itself may be the reason, and the data "
+         "cannot say: such a swing is not assessed and every criterion it is missing from reads **UNRESOLVED**, "
+         "not INCOMPLETE, because the missing swing may be the failure. **No cause is attributed**: an app zero "
+         "pose away from the release (`zero_not_at_release`) may be the app, the phone moving in its clamp, a "
+         "knock, or a wrong pairing, and this report does not say which. What the phone demonstrably got wrong is "
+         "still judged: a grossly wrong gyro on a pair its own static tilt corroborates (`phone_rate_off`) is "
+         "assessed and fails A3.", ""]
     for S in sessions:
         info = S["info"]
         L += [f"## Session {info.get('session')} ({_dig(info, 'phone.platform')})", ""]
@@ -1985,35 +1903,30 @@ def summary_markdown(rows, sessions, title="Free-pendulum encoder validation") -
             L.append(f"- **Pairing unverified:** {S['pairing_unverified']}. **No criterion can read PASS or FAIL.**")
         if S.get("log_note"):
             L.append(f"- **Rig log encoding:** {S['log_note']}.")
-        if S.get("encoder_note"):
-            L.append(f"- **Encoder resolution:** {S['encoder_note']}.")
         if info.get("_to_fill"):
             L.append(f"- **Session header fields still TO FILL:** {', '.join(info['_to_fill'])}")
         L.append("")
 
     L += ["## Swings, in run-sheet order", "",
-          "Last columns: **A1-A5** is criteria A1 to A5 for that swing and nothing else; **App fault** is a fault "
-          "of the app that neither the encoder nor the phone's raw gyro explains (kept even where A1 to A5 could "
-          "not be assessed; \"suspected, not concluded\" where another flag puts its evidence in doubt, which "
-          "leaves the swing UNRESOLVED); **Swing (A1-A5 + app fault)** is the two "
-          "together: a swing passes if it passes A1 to A5 and has no app fault (`pass_A1_A5`, `app_fault`, "
-          "`app_fault_suspected`, `pass_all` in `trials.csv`). Z*, L* and A9* are not part of it: they are "
-          "judged on the session's lines below, so every swing here can read pass under an overall FAIL.", "",
+          "Last columns: **A1-A5** is criteria A1 to A5 for that swing and nothing else (`pass_A1_A5`, and the "
+          "same cell as `swing_verdict`, in `trials.csv`). Z*, L* and A9* are not part of it: they are judged on "
+          "the session's lines below, so every swing here can read pass under an overall FAIL. A swing that is "
+          "NOT ASSESSED - UNRESOLVED was set aside for a reason that may be the phone or the app; the cause is "
+          "not determined here.", "",
           "| Seq | Trial ID | Condition | Release (deg) | Mode | Encoder file | App result | Stopped by | "
           "Encoder release (deg) | RMSE absolute | RMSE clock-aligned | RMSE lag-removed | RMSE EMA-matched | "
           "Bias absolute | Bias lag-removed | Limits of agreement, lag-removed | Gain raw gyro | "
           "Gain app vs unsmoothed encoder (lag-removed) | Gain app vs EMA-matched encoder | Gain absolute | "
           "Lag (ms) | Lag expected from EMA (ms) | Zero-pose fall (deg) | Clock: release - xcorr (ms) | "
           "First excursion error, app-zero (deg) | First excursion error, absolute (deg) | f error (%) | "
-          "tau error (%) | zeta error (%) | Swings counted, phone / encoder | A1-A5 | App fault | "
-          "Swing (A1-A5 + app fault) | Flags |",
-          "|" + "---|" * 34]
+          "tau error (%) | zeta error (%) | Swings counted, phone / encoder | A1-A5 | Flags |",
+          "|" + "---|" * 32]
     for r in rows:
         head = (f"| {r.get('seq', '')} | `{r.get('trial_id', '')}` | {r.get('condition', '')} | "
                 f"{r.get('release_nominal_deg', '')} | {r.get('mode', '')} | {r.get('encoder_file', r.get('encoder_trial', ''))} | "
                 f"{r.get('app_result', '')} | {r.get('stopped_by', '')} | ")
         if "error" in r:
-            L.append(head + f"**not analysed: {r['error']}** |" + " |" * 21 + " not analysed | | not analysed | |")
+            L.append(head + f"**not analysed: {r['error']}** |" + " |" * 21 + " not analysed | |")
             continue
         L.append(head + f"{_f(r.get('release_from_rest_deg'), 1)} | "
                  f"{_f(r['rmse_abs'])} | {_f(r['rmse_clock'])} | {_f(r['rmse_lagrm'])} | {_f(r['rmse_matched'])} | "
@@ -2025,17 +1938,15 @@ def summary_markdown(rows, sessions, title="Free-pendulum encoder validation") -
                  f"{_f(r.get('first_excursion_error_deg'), plus=True)} | {_f(r.get('first_excursion_error_abs_deg'), plus=True)} | "
                  f"{_f(r.get('f_error_pct'), plus=True)} | {_f(r.get('tau_error_pct'), 1, True)} | "
                  f"{_f(r.get('zeta_error_pct'), 1, True)} | {_f(r.get('n_swings_phone'), 0)} / {_f(r.get('n_swings_encoder'), 0)} | "
-                 f"{_verdict_a15(r)} | {_app_fault_cell(r)} | {_verdict(r)} | {r.get('flags', '')} |")
+                 f"{swing_cell(r)} | {r.get('flags', '')} |")
     L.append("")
 
     good = [r for r in rows if "error" not in r]
     platforms = sorted({r.get("platform", "") for r in rows})
     for plat in platforms:
         allp = [r for r in rows if r.get("platform", "") == plat]
-        pr = [r for r in good if r.get("platform", "") == plat]
         L += [f"## {plat or 'phone'}: weight by release angle", "",
-              "Each cell: RMSE lag-removed (deg) and the swing's verdict (A1 to A5 and no app fault); one entry "
-              "per swing.", ""]
+              "Each cell: RMSE lag-removed (deg) and the swing's A1 to A5; one entry per swing.", ""]
         angles = sorted({r.get("release_nominal_deg") for r in allp}, key=lambda v: (v is None, v))
         conds = sorted({r.get("condition", "") for r in allp})
         L += ["| Condition | " + " | ".join(f"{a:g} deg" if isinstance(a, (int, float)) else str(a) for a in angles) + " |",
@@ -2044,7 +1955,7 @@ def summary_markdown(rows, sessions, title="Free-pendulum encoder validation") -
             cells = []
             for a in angles:
                 g = [r for r in allp if r.get("condition") == c and r.get("release_nominal_deg") == a]
-                cells.append("; ".join(f"{_f(r.get('rmse_lagrm'))} {_verdict(r)}" for r in g) or "-")
+                cells.append("; ".join(f"{_f(r.get('rmse_lagrm'))} {swing_cell(r)}" for r in g) or "-")
             L.append(f"| {c} | " + " | ".join(cells) + " |")
         L.append("")
         for key, label in (("condition", "Condition"), ("release_nominal_deg", "Release (deg)"), ("mode", "Mode")):
@@ -2059,11 +1970,14 @@ def summary_markdown(rows, sessions, title="Free-pendulum encoder validation") -
               "incomplete or not assessable), else PASS. Where the pairing is unverified no line is passed or "
               "failed, and the overall line says so. Every limit behind it is PROPOSED. The script's exit code "
               "does not carry it: a session that FAILS or is UNRESOLVED still exits 0.", ""]
+        if no_zero_line(allp):
+            L += [f"**{no_zero_line(allp)}.** Such a swing is \"not analysed\" and counts like any other swing "
+                  f"that could not be analysed (no line can read PASS). How it should count is an open owner "
+                  f"decision: an app that takes no zero on a delivered release may be the failure looked for.", ""]
         for sess_name in sorted({str(r.get("session", "")) for r in allp}):
             note = encoder_scale_note([r for r in allp if str(r.get("session", "")) == sess_name])
             if note:
                 L += [f"**Note, session {sess_name}:** {note}", ""]
-        _ = pr
     if len(platforms) > 1:
         L += ["## By phone", ""] + _group_table(rows, "platform", "Phone") + [""]
 
@@ -2087,7 +2001,10 @@ def summary_markdown(rows, sessions, title="Free-pendulum encoder validation") -
         L.append("")
     L += ["## Provisional constants awaiting the supervisor", "",
           "Acceptance limits, the comparison each is judged on, and the gating thresholds that decide whether a "
-          "swing is judged at all (flagged and set aside, failed as an app fault, or refused). All are PROPOSED.", "",
+          "swing is judged at all (flagged and set aside, or refused). All are PROPOSED.", "",
+          "**On a perfect synthetic sensor these PROPOSED limits currently give FAIL (A5, A7, Z*)** in every clean "
+          "synthetic session tried in the fourth review (24 of 24). Whether the limits or the estimators move is an "
+          "open supervisor decision; no limit was changed to make anything pass.", "",
           "| Constant | Value | Kind |", "|---|---|---|"]
     L += [f"| `{k}` | `{v}` | {constant_kind(k)} |" for k, v in provisional_constants()]
     L += ["",
@@ -2107,12 +2024,14 @@ def summary_markdown(rows, sessions, title="Free-pendulum encoder validation") -
           "block boundary (each change of weight or angle), or state the pairing with a `phone_file` column.",
           "- **An encoder scale error looks like an app failure too.** An encoder reading 5% large (a wrong "
           "counts-per-revolution) is an ordinary unflagged FAIL on A3 on every swing. Where the phone's static "
-          "tilt shows the same ratio on every swing, a note says so under the criteria; it changes no verdict.",
-          f"- **What the encoder cannot see at the app's zero.** Its rate there is a mean over "
-          f"{1e3 * ZERO_WIDEBAND_SPAN_S:g} ms: a knock shorter than that reads low, and a phone moving in its clamp "
-          f"reads nothing. Such a zero is `zero_on_phone_only_motion` (UNRESOLVED) when the phone's own gyro "
-          f"reached the app's rate; it is the app's (`zero_misplaced_by_app`) only when neither instrument moved. "
-          f"The rule needs about {zero_rule_min_counts_per_rev():.0f} counts per revolution at the least.",
+          "tilt shows the same ratio on every swing, a note says so under the criteria; it changes no verdict. "
+          f"Under the note's {100 * ENCODER_SCALE_NOTE_FRAC:g}% threshold nothing is said: a smaller scale error "
+          "arrives as a silent FAIL on A2 to A5. The margin is thin to begin with: on clean synthetic data the "
+          "EMA-matched gain is already about 0.986 at a 20 deg release.",
+          "- **Whose fault a flagged swing is.** Attribution of a misplaced zero or a pegged lag to the app was "
+          "removed until real bench data exists. A zero pose away from the release (`zero_not_at_release`), a lag "
+          "that is not a lag (`lag_pegged`) and clock alignments that disagree (`clock_alignments_disagree`) are "
+          "reported, not assessed and UNRESOLVED; the cause is not determined.",
           "- Samples within a swing are strongly correlated: per-swing limits of agreement describe that swing; "
           "the pooled A2 line uses one mean difference per swing.", ""]
     return "\n".join(L)
@@ -2229,6 +2148,8 @@ def main(argv=None):
         for plat in sorted({r.get("platform", "") for r in rows}):
             lines = verdicts([r for r in rows if r.get("platform", "") == plat])
             print(f"OVERALL ({plat or 'phone'}): {overall_verdict(lines)}  [{LIMITS_STATUS}]")
+        if no_zero_line(rows):                 # not to go unnoticed among "not analysed"
+            print(f"{no_zero_line(rows)}. Not analysed; how such a swing counts is an open owner decision.")
         return 1 if any("error" in r for r in rows) else 0
     except ValidationError as ex:
         print(f"REFUSED: {ex}", file=sys.stderr)
