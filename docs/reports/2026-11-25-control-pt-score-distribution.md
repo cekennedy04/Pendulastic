@@ -1,0 +1,407 @@
+# Do controls score under 0.2? PT score distribution on current main (2026-11-25)
+
+Dated note. Analysis only: the scorer, `HEALTHY_REF`, the Rust core and the app are not
+changed. Group-level numbers and numeric participant IDs only; the per-trial table is local
+and not in the repository. Nothing here is a clinical claim, and no score is compared with a
+MAS grade.
+
+Code: `control_pt_score_distribution.py` (tests in
+`tests/test_control_pt_score_distribution.py`, which need no recordings). The tables between
+the two markers below are written by the script; the prose around them is not.
+
+## The question
+
+The supervisor asked on 2026-11-18 for "control data showing PT score < 0.2". The app's
+flexion-axis fit changed after that (PR #130, footing `ref-100hz-ema0.5-flexrec`), so
+phone-derived numbers from before it are stale. This note re-scores every control trial on
+current `main` (`f6f4737`) and counts.
+
+## Answer
+
+**Partly holds. On the phone it holds on every scored trial, but the phone evidence is one
+participant. On OptiTrack it holds for the legs only after dropped frames are filled.**
+
+| source | control participants | legs | scored trials | under 0.2, trials | under 0.2, legs (median) |
+|---|---|---|---|---|---|
+| phone, on-screen convention | 1 | 2 | 7 of 8 | 7 of 7 (largest 0.084) | 2 of 2 |
+| phone, stored convention | 1 | 2 | 7 of 8 | 7 of 7 (largest 0.088) | 2 of 2 |
+| OptiTrack shank, as recorded | 8 | 15 | 54 of 56 | 36 of 54 (67%) | 10 of 15 |
+| OptiTrack shank, gaps filled | 8 | 15 | 54 of 56 | 51 of 54 (94%) | 15 of 15 |
+| OptiTrack knee angle (loader) | 8 | 15 | 55 of 56 | 36 of 55 (65%) | 10 of 15 |
+
+("Legs" here are legs in one session: 14 distinct legs, one of them recorded in two
+sessions.)
+
+1. **Phone.** There are nine control participants by `metadata.json`. Two have phone
+   recordings. One (ID 16, 8 trials) is in `excluded_trials.json` and so is outside the
+   corpus; the other (ID 23, 8 trials, 2 legs) is the whole phone control sample. Its 7
+   scored trials are all under 0.2 on both conventions, median 0.018. The eighth trial was
+   not scored: the scorer found no swing, and it is the one control trial carrying the
+   axis-fit flag `motion_after_swing_settled`. The excluded participant, scored apart and
+   not pooled, is 8 of 8 under 0.2 (largest 0.053).
+   **"Control phone trials score under 0.2" is true of 15 scored trials from 2 people, one
+   of them excluded from the corpus. It is not yet a statement about controls.**
+2. **OptiTrack, as recorded.** A third of control trials and 5 of 15 legs are at or over
+   0.2, on the shank curve and on the loader's knee angle alike. Seven of the eight
+   participants have at least one such trial. This does not hold.
+3. **OptiTrack, gaps filled.** With dropped frames linearly interpolated, 51 of 54 trials
+   and every leg median are under 0.2. Of the 18 as-recorded trials at or over 0.2, 16 have
+   `area_ratio` as the largest term, and 15 of them fall under 0.2 once filled. This is the
+   dropped-frame effect of `2026-11-18-pt-score-disagreement-diagnosis.md`, which is STATUS
+   decision 3 and still open. The one participant with both instruments shows it directly:
+   optical as recorded 0.17 to 0.46, filled 0.02 to 0.08, phone 0.01 to 0.09.
+4. **0.2 does not separate the groups.** On the phone, baseline sessions: MS trials median
+   0.21 with 11 of 24 under 0.2; stroke trials median 0.33 with 6 of 26 under 0.2 (G7).
+   A control scoring under 0.2 is expected; a score under 0.2 does not identify a control.
+5. **0.2 is not a boundary in the scorer.** See "What 0.2 corresponds to".
+
+## What was scored, and how
+
+- Groups from each participant's `metadata.json` through `participant_paths`
+  (`group_for_diagnosis`). No folder name is spelled in the code.
+- Every trial with a phone recording, an OptiTrack take, or both. Trials in the tracked
+  `excluded_trials.json` are scored but reported apart (G1, G5) and never pooled.
+- **Phone**: raw samples replayed in Python with `REFERENCE_REPLAY_CONFIG` named explicitly
+  (beta 0.041, EMA 0.5, flexion axis fitted over the recording) at `ANALYSIS_TICK_S`
+  (10 ms). The app's angle is scored twice: `detrend=False`, the convention the app shows,
+  and `detrend=True`, the convention it stores.
+- **OptiTrack**: the shank plate's rotation about its own swing axis
+  (`imu_optitrack_validation.optical_curves`), as recorded and with dropped frames
+  linearly interpolated over the whole take; and the knee angle from
+  `pendulastic_pt_score.load_optitrack`, which is the curve `HEALTHY_REF` was derived on.
+- Score: `compute_pt_params` then `mas_estimate`, formula `pt5trough-ref-2026-11-16`,
+  unchanged. A trial counts as scored only if `mas_estimate` calls it interpretable.
+- A paired OptiTrack take exists for all 8 control phone trials. The other 48 control
+  trials are OptiTrack only; they are included because without them the control sample is
+  one person.
+
+## Tables
+
+Generated by `control_pt_score_distribution.py`. Scorer `pt5trough-ref-2026-11-16`, footing `ref-100hz-ema0.5-flexrec`, replay config `REFERENCE_REPLAY_CONFIG` at tick 0.01 s.
+
+### G1. What was scored
+
+| set | participants | legs | leg sessions | trials | with phone | with OptiTrack | with both |
+|---|---|---|---|---|---|---|---|
+| control, in corpus | 8 | 14 | 15 | 56 | 8 | 56 | 8 |
+| control, in `excluded_trials.json` (reported apart) | 3 | 6 | 7 | 21 | 8 | 21 | 8 |
+| MS, in corpus (all sessions) | 9 | 18 | 44 | 190 | 140 | 171 | 121 |
+| MS, baseline sessions only | 7 | 14 | 14 | 60 | 35 | 54 | 29 |
+| stroke, in corpus (all sessions) | 4 | 7 | 7 | 30 | 30 | 30 | 30 |
+| stroke, baseline sessions only | 4 | 7 | 7 | 30 | 30 | 30 | 30 |
+
+Control participant IDs in corpus: 2, 6, 7, 8, 9, 10, 12, 23. With a phone recording: 23. Excluded control trials belong to: 2, 9, 16.
+Phone trials whose path names no single participant and leg (left out): 1. Trial keys shared by two OptiTrack files: 0.
+
+### G2. Controls: PT score per trial and per leg (shipped `HEALTHY_REF`)
+
+Scored (interpretable) trials only; a leg is one leg in one session and its value is the median of its scored trials.
+
+| set | curve | unit | n | median | IQR | range | < 0.1709 | < 0.2 | < 0.3528 |
+|---|---|---|---|---|---|---|---|---|---|
+| control | phone, on-screen (detrend off) | trial | 7 | 0.018 | 0.016 to 0.037 | 0.013 to 0.084 | 7/7 (100%) | 7/7 (100%) | 7/7 (100%) |
+| control | phone, on-screen (detrend off) | leg | 2 | 0.024 | 0.020 to 0.028 | 0.016 to 0.032 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| control | phone, stored (detrend on) | trial | 7 | 0.018 | 0.016 to 0.041 | 0.013 to 0.088 | 7/7 (100%) | 7/7 (100%) | 7/7 (100%) |
+| control | phone, stored (detrend on) | leg | 2 | 0.025 | 0.020 to 0.031 | 0.015 to 0.036 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| control | optical shank, as recorded | trial | 54 | 0.123 | 0.063 to 0.224 | 0.000 to 1.189 | 34/54 (63%) | 36/54 (67%) | 46/54 (85%) |
+| control | optical shank, as recorded | leg | 15 | 0.114 | 0.072 to 0.215 | 0.026 to 0.443 | 10/15 (67%) | 10/15 (67%) | 13/15 (87%) |
+| control | optical shank, gaps filled | trial | 54 | 0.070 | 0.036 to 0.114 | 0.000 to 1.186 | 51/54 (94%) | 51/54 (94%) | 53/54 (98%) |
+| control | optical shank, gaps filled | leg | 15 | 0.068 | 0.043 to 0.112 | 0.022 to 0.127 | 15/15 (100%) | 15/15 (100%) | 15/15 (100%) |
+| control | optical knee angle (loader) | trial | 55 | 0.109 | 0.060 to 0.298 | 0.000 to 0.630 | 35/55 (64%) | 36/55 (65%) | 45/55 (82%) |
+| control | optical knee angle (loader) | leg | 15 | 0.115 | 0.070 to 0.242 | 0.014 to 0.495 | 10/15 (67%) | 10/15 (67%) | 13/15 (87%) |
+
+### G3. Controls: how each trial ended
+
+| curve | trials with the source | scored | refused | unscored | error | reasons (not scored) |
+|---|---|---|---|---|---|---|
+| phone, on-screen (detrend off) | 8 | 7 | 0 | 1 | 0 | unscored x1 |
+| phone, stored (detrend on) | 8 | 7 | 0 | 1 | 0 | unscored x1 |
+| optical shank, as recorded | 56 | 54 | 1 | 1 | 0 | refused: no oscillation x1; unscored x1 |
+| optical shank, gaps filled | 56 | 54 | 1 | 1 | 0 | refused: no oscillation x1; unscored x1 |
+| optical knee angle (loader) | 56 | 55 | 0 | 1 | 0 | unscored x1 |
+
+Axis-fit flags on the 8 control phone trials: motion_after_swing_settled x1; on the ones not scored: motion_after_swing_settled x1.
+
+### G4. Controls: trial-to-trial spread within a leg
+
+Legs with two or more scored trials. "Straddle" = legs with trials on both sides of 0.2.
+
+| curve | legs | trials | range within leg, median | largest | pooled within-leg SD | straddle |
+|---|---|---|---|---|---|---|
+| phone, on-screen (detrend off) | 2 | 7 | 0.040 | 0.067 | 0.025 | 0 |
+| phone, stored (detrend on) | 2 | 7 | 0.042 | 0.071 | 0.027 | 0 |
+| optical shank, as recorded | 15 | 54 | 0.090 | 1.087 | 0.166 | 6 |
+| optical shank, gaps filled | 15 | 54 | 0.051 | 1.082 | 0.158 | 3 |
+| optical knee angle (loader) | 15 | 55 | 0.083 | 0.553 | 0.123 | 5 |
+
+### G5. Circularity: who is in `HEALTHY_REF`, and scores with that person left out
+
+Participants in the derivation that produced the shipped `HEALTHY_REF` (given with --shipped-ref-pids): 6, 7, 8, 9, 10, 12, 23. Control participants in the corpus outside it: 2.
+
+The derivation set as rebuilt today with the current loader (control, baseline, not excluded, interpretable on the loader curve): 55 trials, 14 legs, 8 participants (IDs 2, 6, 7, 8, 9, 10, 12, 23). Data-derived entries, shipped against the median of today's set: `phi_max_ratio` 0.6264 / 0.6075; `f` 0.9501 / 0.9314; `area_ratio` 0.1678 / 0.1522.
+
+"Re-derived" scores use today's set medians; "own data left out" uses today's set without the trial's own participant.
+
+| set | curve | unit | n | median | IQR | range | < 0.1709 | < 0.2 | < 0.3528 |
+|---|---|---|---|---|---|---|---|---|---|
+| in shipped derivation, shipped ref | phone, on-screen (detrend off) | trial | 7 | 0.018 | 0.016 to 0.037 | 0.013 to 0.084 | 7/7 (100%) | 7/7 (100%) | 7/7 (100%) |
+| in shipped derivation, shipped ref | phone, on-screen (detrend off) | leg | 2 | 0.024 | 0.020 to 0.028 | 0.016 to 0.032 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| in shipped derivation, shipped ref | phone, stored (detrend on) | trial | 7 | 0.018 | 0.016 to 0.041 | 0.013 to 0.088 | 7/7 (100%) | 7/7 (100%) | 7/7 (100%) |
+| in shipped derivation, shipped ref | phone, stored (detrend on) | leg | 2 | 0.025 | 0.020 to 0.031 | 0.015 to 0.036 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| in shipped derivation, shipped ref | optical shank, as recorded | trial | 45 | 0.149 | 0.102 to 0.277 | 0.000 to 1.189 | 25/45 (56%) | 27/45 (60%) | 37/45 (82%) |
+| in shipped derivation, shipped ref | optical shank, as recorded | leg | 12 | 0.126 | 0.099 to 0.251 | 0.026 to 0.443 | 7/12 (58%) | 7/12 (58%) | 10/12 (83%) |
+| in shipped derivation, shipped ref | optical shank, gaps filled | trial | 45 | 0.077 | 0.046 to 0.117 | 0.000 to 1.186 | 42/45 (93%) | 42/45 (93%) | 44/45 (98%) |
+| in shipped derivation, shipped ref | optical shank, gaps filled | leg | 12 | 0.086 | 0.045 to 0.113 | 0.022 to 0.127 | 12/12 (100%) | 12/12 (100%) | 12/12 (100%) |
+| in shipped derivation, shipped ref | optical knee angle (loader) | trial | 46 | 0.144 | 0.077 to 0.319 | 0.000 to 0.630 | 26/46 (57%) | 27/46 (59%) | 36/46 (78%) |
+| in shipped derivation, shipped ref | optical knee angle (loader) | leg | 12 | 0.119 | 0.094 to 0.274 | 0.019 to 0.495 | 7/12 (58%) | 7/12 (58%) | 10/12 (83%) |
+| outside shipped derivation (held out), shipped ref | optical shank, as recorded | trial | 9 | 0.034 | 0.026 to 0.081 | 0.020 to 0.171 | 9/9 (100%) | 9/9 (100%) | 9/9 (100%) |
+| outside shipped derivation (held out), shipped ref | optical shank, as recorded | leg | 3 | 0.030 | 0.028 to 0.072 | 0.026 to 0.114 | 3/3 (100%) | 3/3 (100%) | 3/3 (100%) |
+| outside shipped derivation (held out), shipped ref | optical shank, gaps filled | trial | 9 | 0.034 | 0.026 to 0.081 | 0.020 to 0.171 | 9/9 (100%) | 9/9 (100%) | 9/9 (100%) |
+| outside shipped derivation (held out), shipped ref | optical shank, gaps filled | leg | 3 | 0.030 | 0.028 to 0.072 | 0.026 to 0.114 | 3/3 (100%) | 3/3 (100%) | 3/3 (100%) |
+| outside shipped derivation (held out), shipped ref | optical knee angle (loader) | trial | 9 | 0.036 | 0.019 to 0.082 | 0.013 to 0.165 | 9/9 (100%) | 9/9 (100%) | 9/9 (100%) |
+| outside shipped derivation (held out), shipped ref | optical knee angle (loader) | leg | 3 | 0.036 | 0.025 to 0.075 | 0.014 to 0.115 | 3/3 (100%) | 3/3 (100%) | 3/3 (100%) |
+| all controls, re-derived ref | phone, on-screen (detrend off) | trial | 7 | 0.014 | 0.013 to 0.030 | 0.010 to 0.075 | 7/7 (100%) | 7/7 (100%) | 7/7 (100%) |
+| all controls, re-derived ref | phone, on-screen (detrend off) | leg | 2 | 0.019 | 0.015 to 0.022 | 0.012 to 0.026 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| all controls, re-derived ref | phone, stored (detrend on) | trial | 7 | 0.014 | 0.012 to 0.034 | 0.010 to 0.079 | 7/7 (100%) | 7/7 (100%) | 7/7 (100%) |
+| all controls, re-derived ref | phone, stored (detrend on) | leg | 2 | 0.020 | 0.016 to 0.025 | 0.011 to 0.030 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| all controls, re-derived ref | optical shank, as recorded | trial | 54 | 0.123 | 0.058 to 0.248 | 0.004 to 1.289 | 32/54 (59%) | 34/54 (63%) | 43/54 (80%) |
+| all controls, re-derived ref | optical shank, as recorded | leg | 15 | 0.114 | 0.077 to 0.248 | 0.017 to 0.497 | 10/15 (67%) | 10/15 (67%) | 12/15 (80%) |
+| all controls, re-derived ref | optical shank, gaps filled | trial | 54 | 0.066 | 0.030 to 0.111 | 0.004 to 1.286 | 51/54 (94%) | 51/54 (94%) | 53/54 (98%) |
+| all controls, re-derived ref | optical shank, gaps filled | leg | 15 | 0.064 | 0.036 to 0.111 | 0.017 to 0.123 | 15/15 (100%) | 15/15 (100%) | 15/15 (100%) |
+| all controls, re-derived ref | optical knee angle (loader) | trial | 55 | 0.115 | 0.060 to 0.336 | 0.003 to 0.688 | 33/55 (60%) | 35/55 (64%) | 42/55 (76%) |
+| all controls, re-derived ref | optical knee angle (loader) | leg | 15 | 0.115 | 0.075 to 0.275 | 0.004 to 0.554 | 10/15 (67%) | 10/15 (67%) | 13/15 (87%) |
+| all controls, own data left out | phone, on-screen (detrend off) | trial | 7 | 0.017 | 0.015 to 0.031 | 0.012 to 0.075 | 7/7 (100%) | 7/7 (100%) | 7/7 (100%) |
+| all controls, own data left out | phone, on-screen (detrend off) | leg | 2 | 0.020 | 0.017 to 0.023 | 0.014 to 0.026 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| all controls, own data left out | phone, stored (detrend on) | trial | 7 | 0.017 | 0.015 to 0.035 | 0.012 to 0.078 | 7/7 (100%) | 7/7 (100%) | 7/7 (100%) |
+| all controls, own data left out | phone, stored (detrend on) | leg | 2 | 0.022 | 0.018 to 0.027 | 0.013 to 0.031 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| all controls, own data left out | optical shank, as recorded | trial | 54 | 0.140 | 0.081 to 0.310 | 0.004 to 1.271 | 29/54 (54%) | 33/54 (61%) | 41/54 (76%) |
+| all controls, own data left out | optical shank, as recorded | leg | 15 | 0.116 | 0.098 to 0.302 | 0.023 to 0.620 | 10/15 (67%) | 10/15 (67%) | 12/15 (80%) |
+| all controls, own data left out | optical shank, gaps filled | trial | 54 | 0.067 | 0.033 to 0.111 | 0.004 to 1.268 | 50/54 (93%) | 51/54 (94%) | 53/54 (98%) |
+| all controls, own data left out | optical shank, gaps filled | leg | 15 | 0.067 | 0.038 to 0.113 | 0.021 to 0.127 | 15/15 (100%) | 15/15 (100%) | 15/15 (100%) |
+| all controls, own data left out | optical knee angle (loader) | trial | 55 | 0.133 | 0.065 to 0.424 | 0.004 to 0.758 | 33/55 (60%) | 33/55 (60%) | 40/55 (73%) |
+| all controls, own data left out | optical knee angle (loader) | leg | 15 | 0.117 | 0.091 to 0.330 | 0.011 to 0.690 | 10/15 (67%) | 10/15 (67%) | 11/15 (73%) |
+| excluded control trials, shipped ref | phone, on-screen (detrend off) | trial | 8 | 0.014 | 0.010 to 0.026 | 0.005 to 0.052 | 8/8 (100%) | 8/8 (100%) | 8/8 (100%) |
+| excluded control trials, shipped ref | phone, on-screen (detrend off) | leg | 2 | 0.015 | 0.012 to 0.018 | 0.008 to 0.021 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| excluded control trials, shipped ref | phone, stored (detrend on) | trial | 8 | 0.014 | 0.010 to 0.022 | 0.003 to 0.053 | 8/8 (100%) | 8/8 (100%) | 8/8 (100%) |
+| excluded control trials, shipped ref | phone, stored (detrend on) | leg | 2 | 0.015 | 0.012 to 0.018 | 0.008 to 0.021 | 2/2 (100%) | 2/2 (100%) | 2/2 (100%) |
+| excluded control trials, shipped ref | optical shank, as recorded | trial | 12 | 0.029 | 0.006 to 0.147 | 0.001 to 0.297 | 9/12 (75%) | 9/12 (75%) | 12/12 (100%) |
+| excluded control trials, shipped ref | optical shank, as recorded | leg | 4 | 0.093 | 0.015 to 0.200 | 0.002 to 0.297 | 3/4 (75%) | 3/4 (75%) | 4/4 (100%) |
+| excluded control trials, shipped ref | optical shank, gaps filled | trial | 13 | 0.034 | 0.010 to 0.127 | 0.002 to 0.297 | 10/13 (77%) | 10/13 (77%) | 13/13 (100%) |
+| excluded control trials, shipped ref | optical shank, gaps filled | leg | 4 | 0.093 | 0.015 to 0.200 | 0.005 to 0.297 | 3/4 (75%) | 3/4 (75%) | 4/4 (100%) |
+| excluded control trials, shipped ref | optical knee angle (loader) | trial | 11 | 0.071 | 0.018 to 0.120 | 0.002 to 0.239 | 9/11 (82%) | 9/11 (82%) | 11/11 (100%) |
+| excluded control trials, shipped ref | optical knee angle (loader) | leg | 4 | 0.058 | 0.014 to 0.132 | 0.002 to 0.239 | 3/4 (75%) | 3/4 (75%) | 4/4 (100%) |
+
+### G6. Control trials at or over 0.2
+
+21 of 56 control trials are at or over 0.2 on at least one curve; they belong to participants 6, 7, 8, 9, 10, 12, 23.
+
+| curve | trials at or over | of scored | participants | A0 deg, median (range) | A0 of trials under, median | dropped optical frames, median share: over / under | largest score term | scorer flags | axis-fit / optical flags |
+|---|---|---|---|---|---|---|---|---|---|
+| phone, on-screen (detrend off) | 0 | 7 | none | n/a | 70 | n/a / 0.10 | none | none | none |
+| phone, stored (detrend on) | 0 | 7 | none | n/a | 70 | n/a / 0.10 | none | none | none |
+| optical shank, as recorded | 18 | 54 | 6, 7, 8, 9, 10, 12, 23 | 70 (35 to 81) | 65 | 0.15 / 0.10 | area_ratio x16, N x2 | none | knee_curve_disagrees_with_plate x1 |
+| optical shank, gaps filled | 3 | 54 | 7, 9, 10 | 46 (35 to 72) | 68 | 0.08 / 0.13 | N x2, area_ratio x1 | none | knee_curve_disagrees_with_plate x1 |
+| optical knee angle (loader) | 19 | 55 | 6, 7, 8, 10, 12, 23 | 67 (48 to 74) | 56 | 0.14 / 0.06 | area_ratio x18, phi_max_ratio x1 | none | knee_curve_disagrees_with_plate x1 |
+
+### G7. Other groups, for contrast (group level only)
+
+| set | curve | unit | n | median | IQR | range | < 0.1709 | < 0.2 | < 0.3528 |
+|---|---|---|---|---|---|---|---|---|---|
+| MS, baseline | phone, on-screen (detrend off) | trial | 24 | 0.210 | 0.096 to 0.336 | 0.057 to 0.599 | 10/24 (42%) | 11/24 (46%) | 18/24 (75%) |
+| MS, baseline | phone, on-screen (detrend off) | leg | 7 | 0.131 | 0.102 to 0.339 | 0.062 to 0.542 | 4/7 (57%) | 4/7 (57%) | 5/7 (71%) |
+| MS, baseline | phone, stored (detrend on) | trial | 23 | 0.216 | 0.106 to 0.308 | 0.064 to 0.518 | 9/23 (39%) | 9/23 (39%) | 18/23 (78%) |
+| MS, baseline | phone, stored (detrend on) | leg | 7 | 0.201 | 0.120 to 0.324 | 0.074 to 0.394 | 3/7 (43%) | 3/7 (43%) | 5/7 (71%) |
+| MS, baseline | optical shank, as recorded | trial | 52 | 0.234 | 0.100 to 0.364 | 0.026 to 0.682 | 23/52 (44%) | 24/52 (46%) | 38/52 (73%) |
+| MS, baseline | optical shank, as recorded | leg | 14 | 0.197 | 0.110 to 0.351 | 0.035 to 0.481 | 6/14 (43%) | 7/14 (50%) | 10/14 (71%) |
+| MS, baseline | optical shank, gaps filled | trial | 51 | 0.160 | 0.063 to 0.295 | 0.007 to 0.606 | 26/51 (51%) | 26/51 (51%) | 42/51 (82%) |
+| MS, baseline | optical shank, gaps filled | leg | 13 | 0.152 | 0.063 to 0.272 | 0.022 to 0.358 | 7/13 (54%) | 8/13 (62%) | 12/13 (92%) |
+| MS, baseline | optical knee angle (loader) | trial | 50 | 0.178 | 0.080 to 0.257 | 0.011 to 0.870 | 24/50 (48%) | 27/50 (54%) | 44/50 (88%) |
+| MS, baseline | optical knee angle (loader) | leg | 14 | 0.162 | 0.132 to 0.244 | 0.026 to 0.392 | 8/14 (57%) | 8/14 (57%) | 13/14 (93%) |
+| MS, all sessions | phone, on-screen (detrend off) | trial | 123 | 0.106 | 0.034 to 0.232 | 0.002 to 0.921 | 80/123 (65%) | 85/123 (69%) | 112/123 (91%) |
+| MS, all sessions | phone, on-screen (detrend off) | leg | 31 | 0.106 | 0.038 to 0.189 | 0.006 to 0.542 | 23/31 (74%) | 23/31 (74%) | 29/31 (94%) |
+| MS, all sessions | phone, stored (detrend on) | trial | 122 | 0.110 | 0.039 to 0.232 | 0.002 to 0.920 | 80/122 (66%) | 84/122 (69%) | 114/122 (93%) |
+| MS, all sessions | phone, stored (detrend on) | leg | 31 | 0.121 | 0.040 to 0.207 | 0.006 to 0.394 | 22/31 (71%) | 22/31 (71%) | 29/31 (94%) |
+| MS, all sessions | optical shank, as recorded | trial | 163 | 0.145 | 0.062 to 0.277 | 0.001 to 1.141 | 94/163 (58%) | 97/163 (60%) | 135/163 (83%) |
+| MS, all sessions | optical shank, as recorded | leg | 42 | 0.142 | 0.074 to 0.289 | 0.003 to 0.916 | 25/42 (60%) | 27/42 (64%) | 34/42 (81%) |
+| MS, all sessions | optical shank, gaps filled | trial | 163 | 0.081 | 0.045 to 0.237 | 0.002 to 1.077 | 117/163 (72%) | 117/163 (72%) | 150/163 (92%) |
+| MS, all sessions | optical shank, gaps filled | leg | 41 | 0.081 | 0.047 to 0.183 | 0.003 to 0.916 | 30/41 (73%) | 31/41 (76%) | 39/41 (95%) |
+| MS, all sessions | optical knee angle (loader) | trial | 156 | 0.133 | 0.058 to 0.240 | 0.000 to 1.163 | 89/156 (57%) | 99/156 (63%) | 136/156 (87%) |
+| MS, all sessions | optical knee angle (loader) | leg | 42 | 0.135 | 0.068 to 0.235 | 0.007 to 0.686 | 27/42 (64%) | 28/42 (67%) | 36/42 (86%) |
+| stroke, baseline | phone, on-screen (detrend off) | trial | 26 | 0.329 | 0.237 to 0.500 | 0.080 to 1.603 | 6/26 (23%) | 6/26 (23%) | 17/26 (65%) |
+| stroke, baseline | phone, on-screen (detrend off) | leg | 7 | 0.310 | 0.227 to 0.412 | 0.108 to 0.561 | 2/7 (29%) | 2/7 (29%) | 5/7 (71%) |
+| stroke, baseline | phone, stored (detrend on) | trial | 25 | 0.289 | 0.221 to 0.480 | 0.119 to 1.419 | 6/25 (24%) | 6/25 (24%) | 18/25 (72%) |
+| stroke, baseline | phone, stored (detrend on) | leg | 7 | 0.287 | 0.214 to 0.413 | 0.127 to 0.990 | 2/7 (29%) | 2/7 (29%) | 5/7 (71%) |
+| stroke, baseline | optical shank, as recorded | trial | 29 | 0.307 | 0.160 to 0.468 | 0.089 to 1.587 | 8/29 (28%) | 8/29 (28%) | 18/29 (62%) |
+| stroke, baseline | optical shank, as recorded | leg | 7 | 0.285 | 0.208 to 0.397 | 0.103 to 1.198 | 2/7 (29%) | 2/7 (29%) | 5/7 (71%) |
+| stroke, baseline | optical shank, gaps filled | trial | 29 | 0.291 | 0.160 to 0.479 | 0.089 to 1.657 | 8/29 (28%) | 9/29 (31%) | 20/29 (69%) |
+| stroke, baseline | optical shank, gaps filled | leg | 7 | 0.285 | 0.189 to 0.400 | 0.103 to 1.119 | 2/7 (29%) | 2/7 (29%) | 5/7 (71%) |
+| stroke, baseline | optical knee angle (loader) | trial | 26 | 0.287 | 0.206 to 0.419 | 0.088 to 1.629 | 6/26 (23%) | 7/26 (27%) | 18/26 (69%) |
+| stroke, baseline | optical knee angle (loader) | leg | 7 | 0.289 | 0.220 to 0.396 | 0.106 to 1.629 | 2/7 (29%) | 2/7 (29%) | 5/7 (71%) |
+
+| set | curve | trials with the source | scored | refused | unscored | error | reasons (not scored) |
+|---|---|---|---|---|---|---|---|
+| MS, baseline | phone, on-screen (detrend off) | 35 | 24 | 1 | 1 | 9 | error: replay, never zeroed, no release motion found x5; error: replay, unreadable component file x4; refused: no oscillation x1; unscored x1 |
+| MS, baseline | phone, stored (detrend on) | 35 | 23 | 2 | 1 | 9 | error: replay, never zeroed, no release motion found x5; error: replay, unreadable component file x4; refused: no oscillation x2; unscored x1 |
+| MS, baseline | optical shank, as recorded | 54 | 52 | 2 | 0 | 0 | refused: no oscillation x2 |
+| MS, baseline | optical shank, gaps filled | 54 | 51 | 3 | 0 | 0 | refused: no oscillation x3 |
+| MS, baseline | optical knee angle (loader) | 54 | 50 | 1 | 3 | 0 | refused: no oscillation x1; unscored x3 |
+| MS, all sessions | phone, on-screen (detrend off) | 140 | 123 | 4 | 1 | 12 | error: replay, never zeroed, no release motion found x8; error: replay, unreadable component file x4; refused: no oscillation x4; unscored x1 |
+| MS, all sessions | phone, stored (detrend on) | 140 | 122 | 5 | 1 | 12 | error: replay, never zeroed, no release motion found x8; error: replay, unreadable component file x4; refused: no oscillation x5; unscored x1 |
+| MS, all sessions | optical shank, as recorded | 171 | 163 | 5 | 2 | 1 | error: curve GeometryError x1; refused: excursion beyond joint range x1; refused: excursion too small x1; refused: no oscillation x3; unscored x2 |
+| MS, all sessions | optical shank, gaps filled | 171 | 163 | 5 | 2 | 1 | error: curve GeometryError x1; refused: excursion beyond joint range x1; refused: no oscillation x4; unscored x2 |
+| MS, all sessions | optical knee angle (loader) | 171 | 156 | 7 | 7 | 1 | error: curve ValueError x1; refused: excursion beyond joint range x1; refused: excursion too small x2; refused: no oscillation x4; unscored x7 |
+| stroke, baseline | phone, on-screen (detrend off) | 30 | 26 | 2 | 0 | 2 | error: replay, never zeroed, no release motion found x2; refused: excursion too small x1; refused: no oscillation x1 |
+| stroke, baseline | phone, stored (detrend on) | 30 | 25 | 3 | 0 | 2 | error: replay, never zeroed, no release motion found x2; refused: excursion too small x1; refused: no oscillation x2 |
+| stroke, baseline | optical shank, as recorded | 30 | 29 | 1 | 0 | 0 | refused: no oscillation x1 |
+| stroke, baseline | optical shank, gaps filled | 30 | 29 | 1 | 0 | 0 | refused: no oscillation x1 |
+| stroke, baseline | optical knee angle (loader) | 30 | 26 | 4 | 0 | 0 | refused: excursion too small x3; refused: no oscillation x1 |
+
+### G8. Does "controls score under 0.2" hold?
+
+| curve | participants with a scored trial | scored trials under | legs with median under | verdict |
+|---|---|---|---|---|
+| phone, on-screen (detrend off) | 1 | 7/7 (100%) | 2/2 (100%) | holds |
+| phone, stored (detrend on) | 1 | 7/7 (100%) | 2/2 (100%) | holds |
+| optical shank, as recorded | 8 | 36/54 (67%) | 10/15 (67%) | partly holds |
+| optical shank, gaps filled | 8 | 51/54 (94%) | 15/15 (100%) | partly holds |
+| optical knee angle (loader) | 8 | 36/55 (65%) | 10/15 (67%) | partly holds |
+
+<!-- END GENERATED TABLES -->
+
+## Reading the tables
+
+### Control trials at or over 0.2 (G6)
+
+- **Phone: none.** All 7 scored trials have excursion (A0) of 66 to 80 degrees, no scorer
+  quality flag and no axis-fit flag.
+- **Optical, as recorded: 18 of 54** (IDs 6, 7, 8, 9, 10, 12, 23), and **19 of 55 on the
+  loader curve**. Excursion is normal (median 70 degrees, none refused), no scorer quality
+  flag is raised, and the largest term is `area_ratio` on 16 of the 18 (18 of the 19).
+  Sixteen of the 18 have more than 5% of frames dropped. No trial-level flag tells these
+  apart from the trials under 0.2: the loader's `low_marker_coverage` flag is on none of
+  them.
+- **Optical, gaps filled: 3 of 54** (IDs 7, 9, 10), which is what is left when the
+  dropped-frame effect is removed:
+  - one trial scores 1.19 filled or not. It carries the loader flag
+    `knee_curve_disagrees_with_plate`, 37% of its frames are dropped, and its excursion on
+    the shank curve (35 degrees) is about half what the loader reads for the same take (67).
+    The curve is doubtful, not the leg;
+  - one trial scores 0.28, largest term `N`, with a shank excursion of 37 to 46 degrees
+    against 73 on the loader curve of the same take. That points at release detection on
+    the shank curve; it was not examined further;
+  - one trial scores 0.21, largest term `N`, excursion 72 degrees, no flag.
+- The curves themselves were not looked at. The descriptions above are from flags,
+  excursion and the score terms only.
+
+### Refused and unscored control trials (G3)
+
+Of 56 control trials, on the optical curves one is refused (no oscillation, shank curves
+only) and one take is unscored on all three curves (the scorer finds no swing). On the phone
+1 of 8 is unscored, as above. No control trial is refused for excursion, and none errors.
+
+### Spread within a leg (G4)
+
+Phone: 2 legs, trial-to-trial range 0.04 median and 0.07 at most; no leg has trials on both
+sides of 0.2. Optical as recorded: range 0.09 median, 6 of 15 legs straddle 0.2. Filled:
+0.05 median, 3 legs straddle. The pooled SD of the optical curves (0.12 to 0.17) is
+inflated by one outlying take (1.19 on the shank curves, 0.63 on the loader curve). Every
+figure is within one session. One control leg has two sessions; they were not compared.
+
+### Circularity (G5)
+
+`HEALTHY_REF` has five scored entries. `R2n` (1.0) and `N` (6.5) are literature anchors.
+`phi_max_ratio`, `f` and `area_ratio` are medians over control trials, so a control scored
+against them is partly scored against itself.
+
+- **Which control trials derived it.** `derive_healthy_ref.py` as it stood when the
+  reference shipped (`aeb3f76`, PR #110) was re-run against the recordings: 37 interpretable
+  baseline trials, 11 legs, 7 participants, and it reproduces the shipped `phi_max_ratio`
+  0.6264, `f` 0.9501 and `area_ratio` 0.1678 to four decimals. Trials per participant:
+  ID 6: 6, ID 7: 4, ID 8: 8, ID 9: 3, ID 10: 4, ID 12: 8, ID 23: 4. They were derived on the
+  loader's knee-angle curve as it was before the hinge-axis fix (PR #127).
+- **The only phone control is in it.** Participant 23 contributed 4 trials to
+  `HEALTHY_REF` (through OptiTrack, not through the phone). The phone result above is
+  therefore not held out by participant, only by instrument.
+- **Held out.** Participant 2 is in the corpus and in no shipped derivation trial: 9
+  scored OptiTrack trials, 2 legs in 3 sessions, all under 0.2 on all three curves (largest 0.171).
+  Participant 16 is also outside it, and outside the corpus (excluded): 8 of 8 phone trials
+  under 0.2.
+- **Leave one person out.** Re-deriving the three entries from today's set without the
+  trial's own participant changes little: phone still 7 of 7 under 0.2 (largest 0.078);
+  optical as recorded 33 of 54 instead of 36; filled 51 of 54, unchanged; loader 33 of 55
+  instead of 36. The conclusions above do not depend on the circularity.
+- **The shipped reference no longer matches the loader.** Run today, the same derivation
+  takes 55 trials, 14 legs and 8 participants, and its medians are `phi_max_ratio` 0.6075,
+  `f` 0.9314, `area_ratio` 0.1522. The loader changed in PR #127 after the reference was
+  derived. Scoring controls against today's medians barely moves the counts (G5,
+  "re-derived ref"), but the reference and its derivation script now disagree. That is for
+  the owner; nothing is changed here.
+
+### What 0.2 corresponds to
+
+Nothing in the scorer. Its three-zone boundaries are `PT_HEALTHY_MAX` 0.1709 and
+`PT_BORDERLINE_MAX` 0.3528, so 0.2 falls inside the middle ("borderline") zone, 0.03 above
+the healthy edge. Those two boundaries are themselves stale: they were calibrated for the
+seven-term score of 2026-08-24 (`PT_ZONES_CALIBRATED_FOR`), the app shows "uncalibrated"
+instead of a zone (`ZONE_CLASSIFICATION_CALIBRATED = false`), and the recalibration is
+blocked on data. The historical Popovic table kept in the module has 0.12 and 0.28 as its
+first two edges. No constant in the scorer is 0.2.
+
+For the control trials the choice between 0.1709 and 0.2 changes almost nothing: 2 optical
+trials as recorded, 1 on the loader curve, none on the phone or the filled curve (G2).
+
+## Checked a second way
+
+- Seventeen scores from seven control trials were recomputed outside the script: 4 phone
+  trials on both conventions through `imu_optitrack_validation.imu_curves` (its own replay
+  call), and 3 OptiTrack takes from 3 other participants on all three curves, the gap fill
+  redone with pandas. Each score was summed by hand from the five parameters and the
+  `HEALTHY_REF` numbers typed in, not through `mas_estimate`. Largest difference from the
+  script: 1e-16.
+- Every count and quantile in G2 was recounted from the per-trial table with pandas.
+- The script's rebuild of today's derivation set (55 trials, 14 legs, 8 participants) and
+  its three medians match `derive_healthy_ref.py` run on `main`.
+- The shipped derivation set is from re-running the shipping code, as described above.
+
+## Not verified
+
+- **Controls on the phone, as a group.** One participant in the corpus. Nothing here says
+  how a second control would score.
+- **The app and the Rust core.** Scores are from the Python reference replay. The Rust core
+  was not run on these trials here; its parity with Python is pinned by tests that were
+  not re-run for this note.
+- **Independent review.** None. One author, one session.
+- **The curves.** No trial was plotted or looked at, including the three gap-filled trials
+  over 0.2 and the unscored ones. Why the scorer found no swing on one control phone trial
+  and one control OptiTrack take was not investigated.
+- **The gap fill.** Linear interpolation over the whole take with no limit on gap length,
+  in the analysis layer. `pt_disagreement_diag.py` fills inside the window shared with the
+  phone; here there is usually no phone. Whether filling long gaps is legitimate is STATUS
+  decision 3, not decided here.
+- **Sign of the optical curve.** Taken from the curve's own largest excursion
+  (`flexion_positive`), not cross-checked against the phone.
+- **The shipped derivation set.** Identified by re-running old code on today's recordings.
+  It reproduces the shipped numbers, but the exact trial list of 2026-11-16 was never
+  stored.
+- **Control status.** Every control leg is assumed unaffected; none was examined by a
+  clinician (standing limit, `derive_healthy_ref.py`).
+- **Exclusions.** The tracked `excluded_trials.json` on `main` (45 keys) was used. The copy
+  in the main checkout has 38.
+- **One phone trial** whose path names no single participant and leg was left out.
+- **Other groups.** Group-level contrast only, 4 participants per group on the phone at
+  baseline. No inference is drawn from it beyond "0.2 does not separate".
+- **Earlier phone numbers.** Not compared. How far PR #130 moved these trials is not
+  reported here.
+
+## Reproduce
+
+```
+.venv/Scripts/python.exe control_pt_score_distribution.py \
+    --shipped-ref-pids 6,7,8,9,10,12,23 \
+    --per-trial-csv <outside the repository>/control_pt_scores.csv \
+    --report docs/reports/2026-11-25-control-pt-score-distribution.md
+```
+
+About 25 minutes. It rewrites only the block between the two markers. Run it from a
+checkout whose `batch_imu_vs_optitrack_rmse.BASE_DIR` holds the recordings (the default is
+the main checkout; `PENDULASTIC_BASE_DIR` overrides it).
