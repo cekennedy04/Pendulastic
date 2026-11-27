@@ -152,7 +152,7 @@ def test_a_perfect_phone_passes_A3_and_one_reading_five_percent_high_fails(perfe
     good, bad = perfect[3], high[3]
     assert abs(good["gain_matched"] - 1.00) < 0.015 and good["pass_A3_gain"] is True
     assert bad["gain_matched"] > V.PROVISIONAL_A3_GAIN[1] and bad["pass_A3_gain"] is False
-    assert bad["pass_all"] is False
+    assert bad["pass_A1_A5"] is False
     # ... and what the other reading would have said, which is why it is reported beside it:
     assert good["gain_lagrm"] < V.PROVISIONAL_A3_GAIN[0] < bad["gain_lagrm"] < V.PROVISIONAL_A3_GAIN[1]
 
@@ -198,7 +198,7 @@ def test_a_slow_hand_release_is_never_passed_on_a_zero_pose_from_somewhere_else(
     _, _, _, row = _analyse(tmp_path, "hand", hand_s=0.4)
     exact_and_near = row["app_zero_exact"] and abs(row["zero_after_release_ms"]) <= 500.0
     if not exact_and_near:
-        assert row["pass_all"] is not True and (row["not_assessed_because"] or row["app_fault"])
+        assert row["pass_A1_A5"] is not True and row["not_assessed_because"]
     assert abs(row["zero_after_release_ms"]) <= 500.0 or "zero_not_at_release" in row["flags"]
     # A slow release lets the arm fall further before the app zeroes; that is judged, not absorbed.
     assert row["zero_pose_fall_deg"] > 1.0 and row["pass_zero_fall"] is False
